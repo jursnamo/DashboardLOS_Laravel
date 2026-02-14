@@ -22,6 +22,8 @@
     let simLastSnapshot = null;
     const GEMINI_API_KEY = ''; // Isi sendiri secret key Gemini Anda
     const GEMINI_MODEL = 'gemini-2.0-flash';
+    let currentUploadedFileName = '';
+    let latestImportMeta = null;
     
     // PERUBAHAN: Update bucket distribusi TAT - <7 days bukan <8 days
     const tatBuckets = [
@@ -103,15 +105,21 @@
             cv.setAttribute('draggable', 'false');
             cv.ondragstart = function () { return false; };
         });
-        const aiInput = document.getElementById('aiChatInput');
-        aiInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendAIChat();
-            }
-        });
-    });
 
+        const aiInput = document.getElementById('aiChatInput');
+        if (aiInput) {
+            aiInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendAIChat();
+                }
+            });
+        }
+
+        requestAnimationFrame(() => document.body.classList.add('sa-ready')); 
+
+        loadDashboardFromApi(false);
+    });
     function toggleAIChat() {
         document.getElementById('aiChatPanel').classList.toggle('show');
     }
@@ -245,10 +253,216 @@ ${userText}`
         document.getElementById('pan-'+m).classList.add('show');
     }
 
+    function toggleSidebar() {
+        document.body.classList.toggle('nav-function-minify');
+    }
+
+    function menuFromStep(stepId) {
+        return stepId === 'step3' ? 'dashboard' : 'import';
+    }
+
+    function setHeaderByMenu(menuKey) {
+        const pageTitle = document.getElementById('pageTitle');
+        const pageSubtitle = document.getElementById('pageSubtitle');
+
+        document.body.setAttribute('data-route', menuKey);
+
+        if (!pageTitle || !pageSubtitle) return;
+
+        if (menuKey === 'import') {
+            pageTitle.innerHTML = '<i class="subheader-icon fal fa-file-upload"></i> Import Data';
+            pageSubtitle.textContent = 'Upload dan mapping data Excel ke database';
+        } else {
+            pageTitle.innerHTML = '<i class="subheader-icon fal fa-chart-area"></i> Executive LOS Dashboard';
+            pageSubtitle.textContent = 'Strategic Insights & Performance Monitoring';
+        }
+    }
+
+    function setActiveSidebarMenu(stepId) {
+        const menuKey = menuFromStep(stepId);
+        document.querySelectorAll('.js-menu-link, .sidebar-link').forEach((el) => {
+            const isActive = el.getAttribute('data-menu-target') === menuKey;
+            el.classList.toggle('active', isActive);
+            const parentLi = el.closest('li');
+            if (parentLi) parentLi.classList.toggle('active', isActive);
+        });
+        setHeaderByMenu(menuKey);
+    }
+
+    function goToStep(stepId) {
+        ['step1', 'step2', 'step3'].forEach((id) => {
+            const panel = document.getElementById(id);
+            if (!panel) return;
+
+            const isActive = id === stepId;
+            panel.classList.toggle('active', isActive);
+            if (isActive) {
+                panel.classList.remove('step-enter');
+                void panel.offsetWidth;
+                panel.classList.add('step-enter');
+            }
+        });
+        setActiveSidebarMenu(stepId);
+    }
+
+    function goToMenu(menuKey) {
+        if (menuKey === 'dashboard') {
+            goToStep('step3');
+            return;
+        }
+
+        if (raw && raw.length > 0) {
+            goToStep('step2');
+        } else {
+            goToStep('step1');
+        }
+    }
+
+    function getCurrentMapping() {
+        return {
+            id: document.getElementById('mId').value,
+            seg: document.getElementById('mSeg').value,
+            purp: document.getElementById('mPurp').value,
+            limit: document.getElementById('mLimit').value,
+            branch: document.getElementById('mBranch').value,
+            mon: document.getElementById('mMonth').value,
+            c: document.getElementById('mComplete').value,
+            s: document.getElementById('mStart').value,
+            e: document.getElementById('mEnd').value,
+            t: document.getElementById('mTat').value,
+            stat: document.getElementById('mStat').value
+        };
+    }
+
+    function setImportStatus(text, type) {
+        const el = document.getElementById('dbImportStatus');
+        if (!el) return;
+
+        if (!text) {
+            el.innerHTML = '';
+            return;
+        }
+
+        const cls = type === 'ok' ? 'text-success' : (type === 'warn' ? 'text-warning' : 'text-light');
+        el.innerHTML = `<span class="${cls}">${text}</span>`;
+    }
+
+    async function importToDatabaseAndGenerate() {
+        try {
+            if (!raw || raw.length === 0) {
+                alert('Upload file Excel terlebih dahulu.');
+                goToStep('step1');
+                return;
+            }
+
+            const mapping = getCurrentMapping();
+            if (!mapping.id || !mapping.stat) {
+                alert('Application ID dan Status wajib diisi pada mapping.');
+                return;
+            }
+
+            setImportStatus('Menyimpan data ke database...', 'warn');
+
+            const response = await fetch('/api/dashboard/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename: currentUploadedFileName || 'excel-upload',
+                    mode,
+                    mapping,
+                    rows: raw
+                })
+            });
+
+            if (!response.ok) {
+                const err = await response.text();
+                throw new Error(`Import gagal: ${err}`);
+            }
+
+            const result = await response.json();
+            setImportStatus(`Import berhasil (${result.imported_rows || 0} rows).`, 'ok');
+            await loadDashboardFromApi(false);
+        } catch (err) {
+            console.error(err);
+            alert(err.message || 'Import gagal.');
+            setImportStatus('Import gagal.', 'warn');
+        }
+    }
+
+    function mapApiRecordsToRaw(records) {
+        return (records || []).map((row) => ({
+            app_id: row.app_id || '',
+            segment: row.segment || '',
+            purpose: row.purpose || '',
+            approved_limit: row.approved_limit ?? '',
+            branch_name: row.branch_name || '',
+            booking_month: row.booking_month || '',
+            create_date: row.start_date || '',
+            completed_date: row.end_date || '',
+            complete_date: row.complete_date || '',
+            tat_days: row.tat_days ?? '',
+            status_flow: row.status_flow || ''
+        }));
+    }
+
+    function renderDashboardFromApiRecords(records, batchMeta) {
+        latestImportMeta = batchMeta || null;
+        raw = mapApiRecordsToRaw(records);
+        if (!raw.length) return;
+
+        const headers = ['app_id', 'segment', 'purpose', 'approved_limit', 'branch_name', 'booking_month', 'create_date', 'completed_date', 'complete_date', 'tat_days', 'status_flow'];
+        fillSel(headers);
+
+        document.getElementById('mId').value = 'app_id';
+        document.getElementById('mSeg').value = 'segment';
+        document.getElementById('mPurp').value = 'purpose';
+        document.getElementById('mLimit').value = 'approved_limit';
+        document.getElementById('mBranch').value = 'branch_name';
+        document.getElementById('mMonth').value = 'booking_month';
+        document.getElementById('mStart').value = 'create_date';
+        document.getElementById('mEnd').value = 'completed_date';
+        document.getElementById('mComplete').value = 'complete_date';
+        document.getElementById('mTat').value = 'tat_days';
+        document.getElementById('mStat').value = 'status_flow';
+
+        const resolvedMode = (batchMeta && batchMeta.calculation_mode === 'tat') ? 'tat' : 'date';
+        switchMode(resolvedMode);
+        processData();
+
+        const importedLabel = batchMeta && batchMeta.imported_at
+            ? new Date(batchMeta.imported_at).toLocaleString('id-ID')
+            : '-';
+        setImportStatus(`Data source: MySQL (batch #${batchMeta?.id || '-'}, import ${importedLabel})`, 'ok');
+        goToStep('step3');
+    }
+
+    async function loadDashboardFromApi(showAlertIfEmpty = false) {
+        try {
+            const response = await fetch('/api/dashboard/content');
+            if (!response.ok) throw new Error(`API error ${response.status}`);
+
+            const payload = await response.json();
+            if (!payload.has_data) {
+                setImportStatus('Belum ada data di database. Silakan import Excel.', 'warn');
+                if (showAlertIfEmpty) alert('Belum ada data import di database.');
+                goToStep('step1');
+                return false;
+            }
+
+            renderDashboardFromApiRecords(payload.records, payload.batch);
+            return true;
+        } catch (err) {
+            console.error(err);
+            setImportStatus('Gagal load data API. Gunakan import manual.', 'warn');
+            return false;
+        }
+    }
     // ROBUST FILE READER
-    document.getElementById('fileIn').addEventListener('change', e => {
+    const fileInputEl = document.getElementById('fileIn');
+    if (fileInputEl) fileInputEl.addEventListener('change', e => {
         const f = e.target.files[0];
         if(!f) return;
+        currentUploadedFileName = f.name;
         
         const reader = new FileReader();
         reader.onload = function(e) {
@@ -267,8 +481,7 @@ ${userText}`
                 const headers = XLSX.utils.sheet_to_json(worksheet, {header: 1})[0];
                 fillSel(headers);
                 
-                document.getElementById('step1').classList.remove('active');
-                document.getElementById('step2').classList.add('active');
+                goToStep('step2');
             } catch(err) {
                 console.error(err);
                 alert("Gagal memproses file! Error: " + err.message);
@@ -583,8 +796,7 @@ ${userText}`
         // Create Charts
         createCharts(e2eData, globalStats, statusAgg, apps);
 
-        document.getElementById('step2').classList.remove('active');
-        document.getElementById('step3').classList.add('active');
+        goToStep('step3');
     }
 
     function parseDateRobust(dateValue) {
@@ -3510,3 +3722,13 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
+
+
+
+
+
+
+
+
+
+
