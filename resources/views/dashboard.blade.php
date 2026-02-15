@@ -272,9 +272,9 @@
                     <img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="profile-image rounded-circle" alt="Administrator">
                     <div class="info-card-text">
                         <a href="#" class="d-flex align-items-center text-white">
-                            <span class="text-truncate text-truncate-sm d-inline-block">Administrator</span>
+                            <span class="text-truncate text-truncate-sm d-inline-block">{{ auth()->user()->name ?? 'User' }}</span>
                         </a>
-                        <span class="d-inline-block text-truncate text-truncate-sm">LOS Dashboard</span>
+                        <span class="d-inline-block text-truncate text-truncate-sm">{{ auth()->user()->getRoleNames()->first() ?? '' }}</span>
                     </div>
                     <img src="{{ asset('assets/smartadmin4/img/card-backgrounds/cover-2-lg.png') }}" class="cover" alt="cover">
                     <a href="#" onclick="return false;" class="pull-trigger-btn" data-action="toggle" data-class="list-filter-active" data-target=".page-sidebar" data-focus="nav_filter_input">
@@ -407,23 +407,29 @@
                     </div>
 
                     <div>
-                        <a href="#" data-toggle="dropdown" title="admin@los.local" class="header-icon d-flex align-items-center justify-content-center ml-2">
-                            <img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="profile-image rounded-circle" alt="Admin">
+                        <a href="#" data-toggle="dropdown" title="{{ auth()->user()->email ?? '' }}" class="header-icon d-flex align-items-center justify-content-center ml-2">
+                            <img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="profile-image rounded-circle" alt="{{ auth()->user()->name ?? 'User' }}">
                         </a>
                         <div class="dropdown-menu dropdown-menu-animated dropdown-lg">
                             <div class="dropdown-header bg-trans-gradient d-flex flex-row py-4 rounded-top">
                                 <div class="d-flex flex-row align-items-center mt-1 mb-1 color-white">
-                                    <span class="mr-2"><img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="rounded-circle profile-image" alt="Admin"></span>
+                                    <span class="mr-2"><img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="rounded-circle profile-image" alt="{{ auth()->user()->name ?? 'User' }}"></span>
                                     <div class="info-card-text">
-                                        <div class="fs-lg text-truncate text-truncate-lg">Administrator</div>
-                                        <span class="text-truncate text-truncate-md opacity-80">admin@los.local</span>
+                                        <div class="fs-lg text-truncate text-truncate-lg">{{ auth()->user()->name ?? 'User' }}</div>
+                                        <span class="text-truncate text-truncate-md opacity-80">{{ auth()->user()->email ?? '' }}</span>
                                     </div>
                                 </div>
                             </div>
                             <a href="#" class="dropdown-item" onclick="resetSettings(); return false;">Reset Layout</a>
                             <a href="#" class="dropdown-item" data-toggle="modal" data-target="#modal-settings">Settings</a>
                             <div class="dropdown-divider m-0"></div>
-                            <a class="dropdown-item fw-500 pt-3 pb-3" href="#">Logout</a>
+                           <a class="dropdown-item fw-500 pt-3 pb-3" href="{{ route('logout') }}"
+                            onclick="event.preventDefault(); document.getElementById('logout-form').submit();">
+                                Logout
+                            </a>
+                            <form id="logout-form" action="{{ route('logout') }}" method="POST" style="display: none;">
+                                @csrf
+                            </form>
                         </div>
                     </div>
                 </div>
@@ -534,34 +540,3 @@ $(function () {
 });
 </script>
 @endsection
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

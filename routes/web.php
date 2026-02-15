@@ -5,7 +5,9 @@ use App\Http\Controllers\DashboardController;
 use Illuminate\Support\Facades\Route;
 
 // Public Routes
-Route::get('/', [DashboardController::class, 'index'])->name('dashboard.index');
+Route::get('/', function () {
+    return redirect()->route('login');
+});
 
 // Auth Routes
 Route::middleware('guest')->group(function () {
@@ -17,6 +19,7 @@ Route::middleware('guest')->group(function () {
 
 // Protected Routes
 Route::middleware('auth')->group(function () {
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard.index');
     Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 });
 

@@ -43,6 +43,7 @@ class RoleSeeder extends Seeder
             'Valuer External',
             'Credam Maker',
             'Credam Checker',
+            'Administrator',
         ];
 
         foreach ($roles as $role) {
