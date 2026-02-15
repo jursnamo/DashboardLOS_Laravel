@@ -36,8 +36,35 @@ Dokumentasi implementasi authentication sistem menggunakan Laravel Auth dan Spat
   - `POST /logout` - Logout (protected)
 
 ### 5. Views
-- **`resources/views/login.blade.php`** - Login page
+- **`resources/views/login.blade.php`** - Login page dengan demo user list
 - **`resources/views/register.blade.php`** - Register page
+
+### 6. Seeders
+- **`database/seeders/RoleSeeder.php`** - Create semua 30 roles
+- **`database/seeders/UserSeeder.php`** - Create test users dengan roles
+- **`database/seeders/DatabaseSeeder.php`** - Main seeder yang call RoleSeeder dan UserSeeder
+
+## User Roles untuk Loan System
+
+Sistem mendukung 30 roles berikut untuk loan processing:
+- **RM** - Relationship Manager
+- **BM** - Branch Manager
+- **BSM** - Business Service Manager
+- **AM** - Account Manager
+- **BAM** - Branch Account Manager
+- **CIV Maker/Checker** - Credit Investigation Valuation
+- **CS Maker/Checker** - Credit Score
+- **DV Maker/Checker** - Document Valuation
+- **Legal Maker/Checker** - Legal Review
+- **OCR Maker/Checker** - Optical Character Recognition
+- **Underwriter Maker/Checker** - Underwriting
+- **PLI** - Payment Loss Insurance
+- **PO Trade Maker/Checker** - Purchase Order Trade
+- **PO Value Chain Maker/Checker** - Purchase Order Value Chain
+- **Treasury Maker/Checker** - Treasury Operations
+- **Unit Syariah Primover Maker/Checker** - Islamic Banking Unit
+- **Valuer Internal/External** - Property Valuation
+- **Credam Maker/Checker** - Credit Administration
 
 ## Cara Menggunakan
 
@@ -48,7 +75,8 @@ composer require spatie/laravel-permission
 
 ### 2. Publish Config dan Migration dari Spatie
 ```bash
-php artisan vendor:publish --provider="Spatie\Permission\PermissionServiceProvider"
+php artisan vendor:publish --provider="Spatie\Permission\PermissionServiceProvider" --tag="migrations"
+php artisan vendor:publish --provider="Spatie\Permission\PermissionServiceProvider" --tag="config"
 ```
 
 ### 3. Run Migrations
@@ -56,21 +84,40 @@ php artisan vendor:publish --provider="Spatie\Permission\PermissionServiceProvid
 php artisan migrate
 ```
 
-### 4. Implementasi di Controller
+### 4. Seed Database dengan Roles dan Test Users
+```bash
+php artisan db:seed
+```
+
+Ini akan:
+- Create semua 30 roles di tabel `roles`
+- Create 30 test users (satu per role) di tabel `users`
+- Assign setiap user ke role yang sesuai
+
+**Test Credentials:**
+- Email: `test1@example.com` sampai `test30@example.com`
+- Password: `password` (untuk semua)
+
+### 5. Implementasi di Controller
 ```php
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
 
 // Assign role ke user
-$user->assignRole('admin');
+$user->assignRole('RM');
 
 // Check role
-if ($user->hasRole('admin')) {
+if ($user->hasRole('RM')) {
     // ...
 }
 
-// Assign permission
-$user->givePermissionTo('edit posts');
+// Check multiple roles
+if ($user->hasAnyRole(['RM', 'BM'])) {
+    // ...
+}
+
+// Get user roles
+$roles = $user->getRoleNames();
 ```
 
 ## API Routes
