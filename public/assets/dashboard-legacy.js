@@ -122,6 +122,16 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             }
         });
 
+        // Keep page from scrolling while modal is open; scroll happens in modal body.
+        ['detailModal', 'singleAppModal', 'bottleneckDetailModal'].forEach(function (modalId) {
+            const modalEl = document.getElementById(modalId);
+            if (!modalEl) return;
+            modalEl.addEventListener('shown.bs.modal', function () {
+                document.body.classList.add('modal-open');
+                document.body.style.overflow = 'hidden';
+            });
+        });
+
         // Start from dashboard view, then load data from DB API.
         showStep('step3');
         setTimeout(function () {
@@ -412,36 +422,55 @@ ${userText}`
         setDashboardLoading(true, 'Loading dashboard data from database...');
 
         try {
+            const response = await fetch(`${DASHBOARD_CONTENT_API}?aggregated=1`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.message || 'Gagal mengambil data dashboard dari API.');
+            }
+
+            if (!data.has_data) {
+                alert('Data dashboard belum tersedia. Gunakan menu Import Data untuk upload file.');
+                return;
+            }
+
+            const latestBatch = data.batch || null;
+            mode = latestBatch?.calculation_mode === 'tat' ? 'tat' : 'date';
+            switchMode(mode);
+            applyApiMappingToSelects();
+
+            if (data.pre_aggregated && Array.isArray(data.e2e_data)) {
+                hydrateDashboardFromAggregatedPayload(data);
+                return;
+            }
+
+            // Fallback legacy path: paginated raw rows
             const perPage = 5000;
             let page = 1;
             let allRecords = [];
-            let latestBatch = null;
             let lastPage = 1;
             let total = 0;
 
             while (true) {
-                const response = await fetch(`${DASHBOARD_CONTENT_API}?page=${page}&per_page=${perPage}`, {
+                const pagedResponse = await fetch(`${DASHBOARD_CONTENT_API}?page=${page}&per_page=${perPage}&aggregated=0`, {
                     method: 'GET',
                     headers: { 'Accept': 'application/json' }
                 });
 
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    throw new Error(data.message || 'Gagal mengambil data dashboard dari API.');
-                }
-
-                if (!data.has_data) {
-                    alert('Data dashboard belum tersedia. Gunakan menu Import Data untuk upload file.');
-                    return;
+                const pagedData = await pagedResponse.json().catch(() => ({}));
+                if (!pagedResponse.ok) {
+                    throw new Error(pagedData.message || 'Gagal mengambil data dashboard dari API.');
                 }
 
                 if (page === 1) {
-                    latestBatch = data.batch || null;
-                    total = Number((data.pagination && data.pagination.total) || 0);
-                    lastPage = Number((data.pagination && data.pagination.last_page) || 1);
+                    total = Number((pagedData.pagination && pagedData.pagination.total) || 0);
+                    lastPage = Number((pagedData.pagination && pagedData.pagination.last_page) || 1);
                 }
 
-                const rows = Array.isArray(data.records) ? data.records : [];
+                const rows = Array.isArray(pagedData.records) ? pagedData.records : [];
                 allRecords = allRecords.concat(rows);
 
                 const loaded = allRecords.length;
@@ -474,10 +503,6 @@ ${userText}`
                 status_flow: r.status_flow ?? ''
             }));
 
-            mode = latestBatch?.calculation_mode === 'tat' ? 'tat' : 'date';
-            switchMode(mode);
-            applyApiMappingToSelects();
-
             skipPersistImport = true;
             await processData();
         } catch (err) {
@@ -486,6 +511,81 @@ ${userText}`
             skipPersistImport = false;
             isDashboardLoading = false;
             setDashboardLoading(false);
+        }
+    }
+
+    function hydrateDashboardFromAggregatedPayload(payload) {
+        const appsFromApi = Array.isArray(payload.e2e_data) ? payload.e2e_data : [];
+        const statusAggFromApi = payload.status_agg && typeof payload.status_agg === 'object' ? payload.status_agg : {};
+        const flowFromApi = payload.app_flow_events && typeof payload.app_flow_events === 'object' ? payload.app_flow_events : {};
+
+        e2eData = appsFromApi
+            .map(app => ({
+                ...app,
+                id: String(app.id || ''),
+                seg: app.seg || 'Unknown',
+                purp: app.purp || 'General',
+                purpOriginal: app.purpOriginal || app.purp || 'General',
+                limit: safeNum(app.limit, 0),
+                branch: app.branch || 'Unknown',
+                mon: app.mon || 'Unknown',
+                displayMon: app.displayMon || 'Unknown',
+                tat: Math.max(0, safeNum(app.tat, 0)),
+                purpNormalized: normalizePurpose(app.purp || '')
+            }))
+            .filter(app => app.id !== '')
+            .sort((a, b) => a.tat - b.tat);
+
+        const appsMap = {};
+        e2eData.forEach(app => {
+            appsMap[app.id] = {
+                id: app.id,
+                seg: app.seg,
+                purp: app.purp,
+                purpOriginal: app.purpOriginal,
+                limit: app.limit,
+                branch: app.branch,
+                mon: app.mon,
+                displayMon: app.displayMon,
+                min: null,
+                max: null,
+                sumT: app.tat
+            };
+        });
+
+        const normalizedFlowMap = {};
+        Object.keys(flowFromApi).forEach(id => {
+            const flow = flowFromApi[id] || {};
+            normalizedFlowMap[id] = {
+                id: id,
+                branch: flow.branch || (appsMap[id] ? appsMap[id].branch : 'Unknown'),
+                mon: flow.mon || (appsMap[id] ? appsMap[id].mon : 'Unknown'),
+                displayMon: flow.displayMon || (appsMap[id] ? appsMap[id].displayMon : 'Unknown'),
+                events: Array.isArray(flow.events) ? flow.events.map(ev => ({
+                    status: String(ev.status || 'Unknown'),
+                    duration: safeNum(ev.duration, 0),
+                    startMs: Number.isFinite(Number(ev.startMs)) ? Number(ev.startMs) : null,
+                    endMs: Number.isFinite(Number(ev.endMs)) ? Number(ev.endMs) : null,
+                    completeMs: Number.isFinite(Number(ev.completeMs)) ? Number(ev.completeMs) : null,
+                    completeKey: ev.completeKey || null,
+                    seq: Number.isFinite(Number(ev.seq)) ? Number(ev.seq) : 0
+                })) : []
+            };
+        });
+
+        appFlowEvents = normalizedFlowMap;
+        e2eById = {};
+        e2eData.forEach(app => { e2eById[app.id] = app; });
+
+        baseE2EData = e2eData.map(x => ({ ...x }));
+        baseStatusAgg = { ...statusAggFromApi };
+        baseAppsById = { ...appsMap };
+        baseAppFlowEvents = cloneFlowEventMap(appFlowEvents);
+
+        renderDashboardFromCurrentDataset(appsMap, statusAggFromApi);
+
+        if (!Array.isArray(simStatusOrder) || simStatusOrder.length === 0) {
+            initActionSimulator(bottleneckMetrics || []);
         }
     }
 
@@ -3865,6 +3965,7 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
+
 
 
 

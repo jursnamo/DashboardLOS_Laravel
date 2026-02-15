@@ -352,7 +352,7 @@
 
 <!-- Unified Modal for All Details -->
 <div class="modal fade" id="detailModal" tabindex="-1" aria-labelledby="detailModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered" style="max-width: 86vw; width: 86vw;">
+    <div class="modal-dialog modal-dialog-scrollable" style="max-width: 86vw; width: 86vw;">
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header" id="detailModalHeader">
                 <h5 class="modal-title" id="detailModalLabel"><i class="fal fa-tasks me-2"></i>Application Detail</h5>
@@ -397,7 +397,7 @@
 
 <!-- Single Application Detail Modal -->
 <div class="modal fade" id="singleAppModal" tabindex="-1" aria-labelledby="singleAppModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered" style="max-width: 88vw; width: 88vw;">
+    <div class="modal-dialog modal-dialog-scrollable" style="max-width: 88vw; width: 88vw;">
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header" id="singleAppModalHeader">
                 <h5 class="modal-title" id="singleAppModalLabel"><i class="fal fa-file-alt me-2"></i>Application Detail</h5>
@@ -558,7 +558,7 @@
 </div>
 <!-- Tambahkan di akhir file sebelum </body> -->
 <div class="modal fade" id="bottleneckDetailModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered" style="max-width: 88vw; width: 88vw;">
+    <div class="modal-dialog modal-dialog-scrollable" style="max-width: 88vw; width: 88vw;">
         <div class="modal-content">
             <div class="modal-header bg-warning text-white">
                 <h5 class="modal-title" id="bottleneckModalLabel">
@@ -708,6 +708,7 @@
         </div>
     </div>
 </div>
+
 
 
 

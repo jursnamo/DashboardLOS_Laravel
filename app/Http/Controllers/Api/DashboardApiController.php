@@ -18,6 +18,8 @@ class DashboardApiController extends Controller
         @set_time_limit(0);
         @ini_set('memory_limit', '1024M');
 
+        DB::connection()->disableQueryLog();
+
         $latestBatch = DashboardImportBatch::query()
             ->where('status', 'completed')
             ->latest('id')
@@ -32,6 +34,132 @@ class DashboardApiController extends Controller
             ]);
         }
 
+        $mode = $latestBatch->calculation_mode === 'tat' ? 'tat' : 'date';
+        $useAggregated = $request->boolean('aggregated', true);
+
+        if (! $useAggregated) {
+            return $this->contentPaginated($request, $latestBatch);
+        }
+
+        $durationExpr = $mode === 'tat'
+            ? 'COALESCE(tat_days, 0)'
+            : 'CASE WHEN start_date IS NOT NULL AND end_date IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(SECOND, start_date, end_date), 0) / 86400 ELSE 0 END';
+
+        $perAppRows = DB::table('dashboard_records')
+            ->where('batch_id', $latestBatch->id)
+            ->selectRaw("\n                app_id,\n                MAX(segment) as segment,\n                MAX(purpose) as purpose,\n                MAX(approved_limit) as approved_limit,\n                MAX(branch_name) as branch_name,\n                MAX(booking_month) as booking_month,\n                MIN(start_date) as min_start_date,\n                MAX(end_date) as max_end_date,\n                SUM({$durationExpr}) as sum_duration,\n                MIN(row_order) as min_row_order\n            ")
+            ->groupBy('app_id')
+            ->orderBy('min_row_order')
+            ->get();
+
+        $e2eData = [];
+        $appMetaById = [];
+
+        foreach ($perAppRows as $row) {
+            $monthKey = $this->normalizeMonth($row->booking_month);
+            $tat = $mode === 'tat'
+                ? $this->safeFloat($row->sum_duration)
+                : $this->calcDateTat($row->min_start_date, $row->max_end_date);
+
+            $appPayload = [
+                'id' => (string) $row->app_id,
+                'seg' => $this->stringOrDefault($row->segment, 'Unknown'),
+                'purp' => $this->stringOrDefault($row->purpose, 'General'),
+                'purpOriginal' => $this->stringOrDefault($row->purpose, 'General'),
+                'limit' => $this->safeFloat($row->approved_limit),
+                'branch' => $this->stringOrDefault($row->branch_name, 'Unknown'),
+                'mon' => $monthKey,
+                'displayMon' => $this->formatMonthDisplay($monthKey),
+                'tat' => max(0, round($tat, 1)),
+            ];
+
+            $e2eData[] = $appPayload;
+            $appMetaById[$appPayload['id']] = $appPayload;
+        }
+
+        $statusAggRows = DB::table('dashboard_records')
+            ->where('batch_id', $latestBatch->id)
+            ->selectRaw("app_id, status_flow, SUM({$durationExpr}) as total_duration")
+            ->groupBy('app_id', 'status_flow')
+            ->orderBy('app_id')
+            ->orderBy('status_flow')
+            ->get();
+
+        $statusAgg = [];
+        foreach ($statusAggRows as $row) {
+            $appId = trim((string) $row->app_id);
+            $status = trim((string) $row->status_flow);
+
+            if ($appId === '' || $status === '') {
+                continue;
+            }
+
+            $statusAgg[$appId.'##'.$status] = round($this->safeFloat($row->total_duration), 4);
+        }
+
+        $flowEventRows = DB::table('dashboard_records')
+            ->where('batch_id', $latestBatch->id)
+            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(complete_date) as complete_key,\n                MIN(UNIX_TIMESTAMP(start_date) * 1000) as start_ms,\n                MAX(UNIX_TIMESTAMP(end_date) * 1000) as end_ms,\n                MIN(UNIX_TIMESTAMP(complete_date) * 1000) as complete_ms,\n                SUM({$durationExpr}) as duration_sum,\n                MIN(row_order) as seq\n            ")
+            ->groupBy('app_id', 'status_flow', DB::raw('DATE(complete_date)'))
+            ->orderBy('seq')
+            ->get();
+
+        $appFlowEvents = [];
+        foreach ($flowEventRows as $row) {
+            $appId = trim((string) $row->app_id);
+            $status = trim((string) $row->status_flow);
+
+            if ($appId === '' || $status === '') {
+                continue;
+            }
+
+            if (! isset($appFlowEvents[$appId])) {
+                $appMeta = $appMetaById[$appId] ?? null;
+                $appFlowEvents[$appId] = [
+                    'id' => $appId,
+                    'branch' => $appMeta['branch'] ?? 'Unknown',
+                    'mon' => $appMeta['mon'] ?? 'Unknown',
+                    'displayMon' => $appMeta['displayMon'] ?? 'Unknown',
+                    'events' => [],
+                ];
+            }
+
+            $appFlowEvents[$appId]['events'][] = [
+                'status' => $status,
+                'duration' => round($this->safeFloat($row->duration_sum), 4),
+                'startMs' => $row->start_ms !== null ? (int) $row->start_ms : null,
+                'endMs' => $row->end_ms !== null ? (int) $row->end_ms : null,
+                'completeMs' => $row->complete_ms !== null ? (int) $row->complete_ms : null,
+                'completeKey' => $row->complete_key,
+                'seq' => (int) $row->seq,
+            ];
+        }
+
+        return response()->json([
+            'has_data' => true,
+            'pre_aggregated' => true,
+            'batch' => [
+                'id' => $latestBatch->id,
+                'filename' => $latestBatch->filename,
+                'calculation_mode' => $latestBatch->calculation_mode,
+                'status' => $latestBatch->status,
+                'total_rows' => $latestBatch->total_rows,
+                'imported_rows' => $latestBatch->imported_rows,
+                'imported_at' => optional($latestBatch->imported_at)->toIso8601String(),
+            ],
+            'summary' => [
+                'applications' => count($e2eData),
+                'status_pairs' => count($statusAgg),
+                'flow_groups' => count($flowEventRows),
+            ],
+            'e2e_data' => $e2eData,
+            'status_agg' => $statusAgg,
+            'app_flow_events' => $appFlowEvents,
+        ]);
+    }
+
+    private function contentPaginated(Request $request, DashboardImportBatch $latestBatch): JsonResponse
+    {
         $perPage = max(100, min(10000, (int) $request->query('per_page', 5000)));
         $page = max(1, (int) $request->query('page', 1));
 
@@ -60,6 +188,7 @@ class DashboardApiController extends Controller
 
         return response()->json([
             'has_data' => true,
+            'pre_aggregated' => false,
             'batch' => [
                 'id' => $latestBatch->id,
                 'filename' => $latestBatch->filename,
@@ -128,6 +257,7 @@ class DashboardApiController extends Controller
             'status' => 'uploading',
             'total_rows' => $batch->total_rows,
         ], 202);
+        //php artisan queue:work --queue=imports
     }
 
     // Upload chunk rows and directly insert into dashboard_records for this batch
@@ -178,7 +308,7 @@ class DashboardApiController extends Controller
             $rowOrder = $startOrder;
             $now = now();
             $insertRows = [];
-            $chunkSize = 2000;
+            $chunkSize = 1000;
 
             foreach ($rows as $row) {
                 $mapped = $this->mapRowForInsert($row, $mapping, $batchId, $rowOrder, $now);
@@ -301,6 +431,39 @@ class DashboardApiController extends Controller
         ];
     }
 
+    private function stringOrDefault($value, string $default): string
+    {
+        $text = trim((string) ($value ?? ''));
+
+        return $text !== '' ? $text : $default;
+    }
+
+    private function safeFloat($value): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+
+        return is_numeric($value) ? (float) $value : 0.0;
+    }
+
+    private function calcDateTat($minStart, $maxEnd): float
+    {
+        if (! $minStart || ! $maxEnd) {
+            return 0.0;
+        }
+
+        try {
+            $start = Carbon::parse((string) $minStart);
+            $end = Carbon::parse((string) $maxEnd);
+            $seconds = max(0, $start->diffInSeconds($end, false));
+
+            return $seconds / 86400;
+        } catch (\Throwable $e) {
+            return 0.0;
+        }
+    }
+
     private function stringOrNull($value): ?string
     {
         if ($value === null) {
@@ -381,5 +544,22 @@ class DashboardApiController extends Controller
             return null;
         }
     }
-}
 
+    private function formatMonthDisplay(?string $monthKey): string
+    {
+        if (! $monthKey) {
+            return 'Unknown';
+        }
+
+        if (preg_match('/^\d{4}-\d{2}$/', $monthKey) !== 1) {
+            return $monthKey;
+        }
+
+        try {
+            $date = Carbon::createFromFormat('Y-m', $monthKey);
+            return $date->format('M y');
+        } catch (\Throwable $e) {
+            return $monthKey;
+        }
+    }
+}
