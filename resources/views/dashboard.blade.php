@@ -269,7 +269,7 @@
                 </div>
 
                 <div class="info-card">
-                    <img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="profile-image rounded-circle" alt="Administrator">
+                    <img src="{{ Avatar::create(auth()->user()->name ?? 'User')->toBase64() }}" class="profile-image rounded-circle" alt="{{ auth()->user()->name ?? 'User' }}">
                     <div class="info-card-text">
                         <a href="#" class="d-flex align-items-center text-white">
                             <span class="text-truncate text-truncate-sm d-inline-block">{{ auth()->user()->name ?? 'User' }}</span>
@@ -408,12 +408,12 @@
 
                     <div>
                         <a href="#" data-toggle="dropdown" title="{{ auth()->user()->email ?? '' }}" class="header-icon d-flex align-items-center justify-content-center ml-2">
-                            <img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="profile-image rounded-circle" alt="{{ auth()->user()->name ?? 'User' }}">
+                            <img src="{{ Avatar::create(auth()->user()->name ?? 'User')->toBase64() }}" class="profile-image rounded-circle" alt="{{ auth()->user()->name ?? 'User' }}">
                         </a>
                         <div class="dropdown-menu dropdown-menu-animated dropdown-lg">
                             <div class="dropdown-header bg-trans-gradient d-flex flex-row py-4 rounded-top">
                                 <div class="d-flex flex-row align-items-center mt-1 mb-1 color-white">
-                                    <span class="mr-2"><img src="{{ asset('assets/smartadmin4/img/demo/avatars/avatar-admin.png') }}" class="rounded-circle profile-image" alt="{{ auth()->user()->name ?? 'User' }}"></span>
+                                    <span class="mr-2"><img src="{{ Avatar::create(auth()->user()->name ?? 'User')->toBase64() }}" class="rounded-circle profile-image" alt="{{ auth()->user()->name ?? 'User' }}"></span>
                                     <div class="info-card-text">
                                         <div class="fs-lg text-truncate text-truncate-lg">{{ auth()->user()->name ?? 'User' }}</div>
                                         <span class="text-truncate text-truncate-md opacity-80">{{ auth()->user()->email ?? '' }}</span>
