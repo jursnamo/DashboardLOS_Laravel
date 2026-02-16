@@ -31,4 +31,12 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'cloudflare_ai' => [
+        'account_id' => env('CLOUDFLARE_AI_ACCOUNT_ID'),
+        'api_token' => env('CLOUDFLARE_AI_API_TOKEN'),
+        'playbook_token' => env('CLOUDFLARE_AI_PLAYBOOK_TOKEN'),
+        'chat_model' => env('CLOUDFLARE_AI_CHAT_MODEL', '@cf/meta/llama-3.1-8b-instruct'),
+        'playbook_model' => env('CLOUDFLARE_AI_PLAYBOOK_MODEL', '@cf/meta/llama-3.1-8b-instruct'),
+    ],
+
 ];

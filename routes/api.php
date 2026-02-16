@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\DashboardApiController;
 use App\Http\Controllers\Api\AuthApiController;
+use App\Http\Controllers\Api\AiProxyController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -11,6 +12,8 @@ Route::post('/dashboard/import', [DashboardApiController::class, 'import'])->nam
 Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class, 'importChunk'])->name('api.dashboard.import.chunk');
 Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
 Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
+Route::post('/ai/chat', [AiProxyController::class, 'chat'])->name('api.ai.chat');
+Route::post('/ai/playbook', [AiProxyController::class, 'playbook'])->name('api.ai.playbook');
 // Removed generic ParameterController API; using per-model API resources below.
 
 // API routes for master parameters (JSON CRUD)

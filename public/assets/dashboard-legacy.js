@@ -20,8 +20,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     let baseGlobalStats = {};
     let baseAppFlowEvents = {};
     let simLastSnapshot = null;
-    const GEMINI_API_KEY = ''; // Isi sendiri secret key Gemini Anda
-    const GEMINI_MODEL = 'gemini-2.0-flash';
+    const AI_CHAT_API = '/api/ai/chat';
+    const AI_PLAYBOOK_API = '/api/ai/playbook';
     const DASHBOARD_IMPORT_API = '/api/dashboard/import';
     const DASHBOARD_CONTENT_API = '/api/dashboard/content';
     const DASHBOARD_IMPORT_STATUS_API = '/api/dashboard/import';
@@ -33,6 +33,9 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     let importProgressTimer = null;
     let importProgressValue = 0;
     let skipPersistImport = false;
+    let decisionPlaybookReqSeq = 0;
+    const decisionPlaybookCache = new Map();
+    let decisionPlaybookAiRetryAt = 0;
     
     // PERUBAHAN: Update bucket distribusi TAT - <7 days bukan <8 days
     const tatBuckets = [
@@ -192,38 +195,24 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         ].join('\n');
     }
 
-    async function askGemini(userText, contextText) {
-        if (!GEMINI_API_KEY) {
-            throw new Error('GEMINI_API_KEY masih kosong. Isi dulu di script HTML.');
-        }
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-        const body = {
-            contents: [{
-                role: 'user',
-                parts: [{
-                    text:
-`Anda asisten analis LOS dashboard. Jawab ringkas dalam bahasa Indonesia.
-Jika angka tidak cukup, jelaskan keterbatasannya.
-
-Konteks Dashboard:
-${contextText}
-
-Pertanyaan:
-${userText}`
-                }]
-            }]
-        };
-        const res = await fetch(url, {
+    async function askAIForChat(userText, contextText) {
+        const res = await fetch(AI_CHAT_API, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                question: userText,
+                context: contextText || ''
+            })
         });
+
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-            const err = await res.text();
-            throw new Error(`Gemini error ${res.status}: ${err}`);
+            throw new Error(data.message || `AI chat gagal (${res.status})`);
         }
-        const data = await res.json();
-        return data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response.';
+        return String(data.answer || '').trim() || 'No response.';
     }
 
     async function sendAIChat() {
@@ -237,7 +226,7 @@ ${userText}`
         btn.textContent = '...';
         try {
             const ctx = getDashboardContextForAI();
-            const answer = await askGemini(question, ctx);
+            const answer = await askAIForChat(question, ctx);
             appendAIMessage(answer, 'bot');
         } catch (e) {
             appendAIMessage(String(e.message || e), 'err');
@@ -245,6 +234,135 @@ ${userText}`
             btn.disabled = false;
             btn.textContent = 'Kirim';
         }
+    }
+
+    function buildDecisionPlaybookFallback(topImpact3) {
+        return (topImpact3 || []).map(function (r, idx) {
+            const act = r.avgStep >= 2
+                ? 'perbaiki loop approval dan return handling'
+                : (r.avgTat > safeNum(globalStats.q3, 0) ? 'percepat SLA internal dan escalation' : 'monitor mingguan');
+            return {
+                rank: idx + 1,
+                status: r.status,
+                priority: r.priority,
+                action: act,
+                reason: `Impact ${r.impactPct.toFixed(1)}%, Avg TAT ${r.avgTat.toFixed(1)} days, Avg Step ${r.avgStep.toFixed(2)}x`
+            };
+        });
+    }
+
+    function renderDecisionPlaybookItems(targetEl, sourceRows, actions) {
+        if (!targetEl) return;
+        if (!Array.isArray(sourceRows) || !sourceRows.length) {
+            targetEl.innerHTML = `<div class="text-muted">No status with impact > 5%.</div>`;
+            return;
+        }
+
+        const actionMap = {};
+        (actions || []).forEach(function (x, idx) {
+            const key = String((x && x.status) || '').trim().toLowerCase();
+            if (!key) return;
+            actionMap[key] = {
+                action: String((x && x.action) || '').trim(),
+                summary: String((x && x.summary) || '').trim(),
+                slaTargetImpact: String((x && x.sla_target_impact) || '').trim(),
+                reason: String((x && x.reason) || '').trim(),
+                rank: Number((x && x.rank) || idx + 1)
+            };
+        });
+
+        targetEl.innerHTML = sourceRows.map(function (r, idx) {
+            const tone = r.priority === 'High' ? 'high' : (r.priority === 'Medium' ? 'medium' : 'low');
+            const ai = actionMap[String(r.status || '').trim().toLowerCase()] || {};
+            const actionText = escapeHtml(ai.action || 'monitor mingguan');
+            const summaryText = ai.summary ? `<div class="mt-1 text-muted">Summary: ${escapeHtml(ai.summary)}</div>` : '';
+            const targetText = ai.slaTargetImpact ? `<div class="mt-1 text-muted">Target SLA: ${escapeHtml(ai.slaTargetImpact)}</div>` : '';
+            const reasonText = ai.reason ? `<div class="mt-1 text-muted">Alasan: ${escapeHtml(ai.reason)}</div>` : '';
+            return `
+                <div class="playbook-item ${tone}">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="fw-bold">${idx + 1}. ${escapeHtml(r.status)}</span>
+                        <span class="badge ${r.priorityClass}">${r.priority}</span>
+                    </div>
+                    <div>Impact ${r.impactPct.toFixed(1)}% | Avg TAT ${r.avgTat.toFixed(1)} days | Avg Step ${r.avgStep.toFixed(2)}x</div>
+                    <div class="mt-1">Aksi: <span class="text-primary fw-semibold">${actionText}</span></div>
+                    ${summaryText}
+                    ${targetText}
+                    ${reasonText}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function requestDecisionPlaybookAI(playbookRows, totalApp, statusMetrics) {
+        const now = Date.now();
+        if (decisionPlaybookAiRetryAt && now < decisionPlaybookAiRetryAt) {
+            throw new Error('Decision Playbook AI cooldown');
+        }
+
+        // Send compact management-table rows first, then ask for actions.
+        const compact = (playbookRows || []).slice(0, 5).map(function (r) {
+            return {
+                status: r.status,
+                impact_pct: Number(r.impactPct.toFixed(1)),
+                app_count: Number(r.appCount || 0),
+                avg_tat_days: Number(r.avgTat.toFixed(1)),
+                avg_step: Number(r.avgStep.toFixed(2)),
+                priority: r.priority
+            };
+        });
+
+        const outlierCompact = (statusMetrics || []).slice(0, 10).map(function (s) {
+            return {
+                status: String(s.stat || ''),
+                avg: Number(safeNum(s.avg, 0).toFixed(1)),
+                q1: Number(safeNum(s.q1, 0).toFixed(1)),
+                med: Number(safeNum(s.med, 0).toFixed(1)),
+                q3: Number(safeNum(s.q3, 0).toFixed(1)),
+                iqr: Number(safeNum(s.iqr, 0).toFixed(1)),
+                boundary: Number(safeNum(s.boundary, 0).toFixed(1)),
+                outlier: Number(safeNum(s.out, 0))
+            };
+        });
+
+        const cacheKey = JSON.stringify({ total_app: totalApp || 0, rows: compact, outlier_rows: outlierCompact });
+        if (decisionPlaybookCache.has(cacheKey)) {
+            return decisionPlaybookCache.get(cacheKey);
+        }
+
+        const res = await fetch(AI_PLAYBOOK_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                total_app: Number(totalApp || 0),
+                rows: compact,
+                outlier_rows: outlierCompact
+            })
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            if (res.status === 429 || res.status === 503) {
+                decisionPlaybookAiRetryAt = Date.now() + 30000;
+            }
+            throw new Error(data.message || `Decision AI gagal (${res.status})`);
+        }
+
+        const normalized = Array.isArray(data.actions) ? data.actions.slice(0, 3).map(function (x) {
+            return {
+                status: String((x && x.status) || '').trim(),
+                action: String((x && x.action) || '').trim(),
+                summary: String((x && x.summary) || '').trim(),
+                sla_target_impact: String((x && x.sla_target_impact) || '').trim(),
+                reason: String((x && x.reason) || '').trim()
+            };
+        }) : [];
+
+        decisionPlaybookCache.set(cacheKey, normalized);
+        return normalized;
     }
 
     // FUNGSI NORMALISASI PURPOSE
@@ -339,10 +457,14 @@ ${userText}`
         overlay.classList.add('d-none');
     }
 
-    // When the dashboard finishes rendering, other code will dispatch this event.
-    document.addEventListener('dashboard:ready', function () {
-        setDashboardLoading(false);
-    });
+    function emitDashboardReady() {
+        try { document.dispatchEvent(new Event('dashboard:ready')); } catch (e) {}
+        try { window.dispatchEvent(new Event('dashboard:ready')); } catch (e) {}
+    }
+
+    // Hide overlay when any dashboard ready event is emitted.
+    document.addEventListener('dashboard:ready', function () { setDashboardLoading(false); });
+    window.addEventListener('dashboard:ready', function () { setDashboardLoading(false); });
     function updateImportProgress(percent, totalRows, label) {
         const bar = document.getElementById('importProgressBar');
         const text = document.getElementById('importProgressText');
@@ -447,6 +569,7 @@ ${userText}`
 
             if (!data.has_data) {
                 alert('Data dashboard belum tersedia. Gunakan menu Import Data untuk upload file.');
+                emitDashboardReady();
                 return;
             }
 
@@ -499,6 +622,7 @@ ${userText}`
 
             if (!allRecords.length) {
                 alert('Data dashboard kosong. Gunakan menu Import Data untuk upload file.');
+                emitDashboardReady();
                 return;
             }
 
@@ -521,11 +645,11 @@ ${userText}`
         } catch (err) {
             alert(err.message || 'Terjadi kesalahan saat load dashboard dari API.');
             // Ensure overlay is cleared on error
-            window.dispatchEvent(new Event('dashboard:ready'));
+            emitDashboardReady();
         } finally {
             skipPersistImport = false;
             isDashboardLoading = false;
-            // Do not hide overlay here; wait for rendering code to dispatch 'dashboard:ready'
+            // Overlay is hidden when emitDashboardReady() is called by the render path.
         }
     }
 
@@ -598,6 +722,7 @@ ${userText}`
         baseAppFlowEvents = cloneFlowEventMap(appFlowEvents);
 
         renderDashboardFromCurrentDataset(appsMap, statusAggFromApi);
+        emitDashboardReady();
 
         if (!Array.isArray(simStatusOrder) || simStatusOrder.length === 0) {
             initActionSimulator(bottleneckMetrics || []);
@@ -1048,7 +1173,7 @@ ${userText}`
         createCharts(e2eData, globalStats, statusAgg, apps);
 
         // Signal that the dashboard has finished rendering and it's safe to hide the loading overlay
-        try { window.dispatchEvent(new Event('dashboard:ready')); } catch (e) {}
+        emitDashboardReady();
 
         document.getElementById('step2').classList.remove('active');
         document.getElementById('step3').classList.add('active');
@@ -2584,23 +2709,23 @@ ${userText}`
         if (kpiDelayEl) kpiDelayEl.textContent = `${top5Delay.toFixed(1)} days`;
 
         const topImpact3 = [...eligibleRows].sort((a, b) => b.impactPct - a.impactPct).slice(0, 3);
-        const recos = topImpact3.map((r, idx) => {
-            const act = r.avgStep >= 2
-                ? 'perbaiki loop approval dan return handling'
-                : (r.avgTat > globalStats.q3 ? 'percepat SLA internal dan escalation' : 'monitor mingguan');
-            const tone = r.priority === 'High' ? 'high' : (r.priority === 'Medium' ? 'medium' : 'low');
-            return `
-                <div class="playbook-item ${tone}">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span class="fw-bold">${idx + 1}. ${r.status}</span>
-                        <span class="badge ${r.priorityClass}">${r.priority}</span>
-                    </div>
-                    <div>Impact ${r.impactPct.toFixed(1)}% | Avg TAT ${r.avgTat.toFixed(1)} days | Avg Step ${r.avgStep.toFixed(2)}x</div>
-                    <div class="mt-1">Aksi: <span class="text-primary fw-semibold">${act}</span></div>
-                </div>
-            `;
-        });
-        recoEl.innerHTML = recos.length ? recos.join('') : `<div class="text-muted">No status with impact > 5%.</div>`;
+        const fallback = buildDecisionPlaybookFallback(topImpact3);
+        renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
+
+        if (!topImpact3.length) return;
+
+        const requestId = ++decisionPlaybookReqSeq;
+        recoEl.insertAdjacentHTML('afterbegin', `<div class="small text-muted mb-2">Generating AI recommendation...</div>`);
+
+        requestDecisionPlaybookAI(top5, totalApp, stMetrics)
+            .then(function (aiActions) {
+                if (requestId !== decisionPlaybookReqSeq) return;
+                renderDecisionPlaybookItems(recoEl, topImpact3, aiActions);
+            })
+            .catch(function (_) {
+                if (requestId !== decisionPlaybookReqSeq) return;
+                renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
+            });
     }
 
     function initActionSimulator(stMetrics) {
@@ -3983,22 +4108,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
