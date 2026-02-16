@@ -36,6 +36,9 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     let decisionPlaybookReqSeq = 0;
     const decisionPlaybookCache = new Map();
     let decisionPlaybookAiRetryAt = 0;
+    let selectedChatProvider = '';
+    let selectedPlaybookProvider = '';
+    let latestPlaybookContext = null;
     
     // PERUBAHAN: Update bucket distribusi TAT - <7 days bukan <8 days
     const tatBuckets = [
@@ -151,6 +154,28 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         if (panel) panel.classList.toggle('show');
     }
 
+    function setChatProvider(provider) {
+        selectedChatProvider = String(provider || '').trim().toLowerCase();
+        const cf = document.getElementById('chatProviderCloudflare');
+        const gm = document.getElementById('chatProviderGemini');
+        const label = document.getElementById('aiChatProviderLabel');
+        if (cf) cf.className = `badge ${selectedChatProvider === 'cloudflare' ? 'badge-primary' : 'badge-secondary'}`;
+        if (gm) gm.className = `badge ${selectedChatProvider === 'gemini' ? 'badge-primary' : 'badge-secondary'}`;
+        if (label) {
+            const title = selectedChatProvider === 'gemini' ? 'Gemini AI Assistant'
+                : (selectedChatProvider === 'cloudflare' ? 'Cloudflare AI Assistant' : 'AI Assistant');
+            label.innerHTML = `<i class="fal fa-star me-1"></i>${title}`;
+        }
+    }
+
+    function setPlaybookProviderBadge(provider) {
+        selectedPlaybookProvider = String(provider || '').trim().toLowerCase();
+        const cf = document.getElementById('playbookProviderCloudflare');
+        const gm = document.getElementById('playbookProviderGemini');
+        if (cf) cf.className = `badge ${selectedPlaybookProvider === 'cloudflare' ? 'badge-primary' : 'badge-secondary'}`;
+        if (gm) gm.className = `badge ${selectedPlaybookProvider === 'gemini' ? 'badge-primary' : 'badge-secondary'}`;
+    }
+
     async function togglePresentMode() {
         const inMode = document.body.classList.toggle('present-mode');
         const btn = document.getElementById('presentModeBtn');
@@ -195,7 +220,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         ].join('\n');
     }
 
-    async function askAIForChat(userText, contextText) {
+    async function askAIForChat(userText, contextText, provider) {
         const res = await fetch(AI_CHAT_API, {
             method: 'POST',
             headers: {
@@ -204,7 +229,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             },
             body: JSON.stringify({
                 question: userText,
-                context: contextText || ''
+                context: contextText || '',
+                provider: provider
             })
         });
 
@@ -220,13 +246,17 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         const btn = document.getElementById('aiChatSendBtn');
         const question = (input.value || '').trim();
         if (!question) return;
+        if (!selectedChatProvider) {
+            appendAIMessage('Pilih provider AI dulu: Cloudflare atau Gemini.', 'err');
+            return;
+        }
         input.value = '';
         appendAIMessage(question, 'user');
         btn.disabled = true;
         btn.textContent = '...';
         try {
             const ctx = getDashboardContextForAI();
-            const answer = await askAIForChat(question, ctx);
+            const answer = await askAIForChat(question, ctx, selectedChatProvider);
             appendAIMessage(answer, 'bot');
         } catch (e) {
             appendAIMessage(String(e.message || e), 'err');
@@ -258,23 +288,53 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             return;
         }
 
+        const normalizeStatusKey = function (value) {
+            return String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '');
+        };
+
         const actionMap = {};
-        (actions || []).forEach(function (x, idx) {
-            const key = String((x && x.status) || '').trim().toLowerCase();
-            if (!key) return;
-            actionMap[key] = {
+        const actionList = (actions || []).map(function (x, idx) {
+            return {
+                status: String((x && x.status) || '').trim(),
                 action: String((x && x.action) || '').trim(),
                 summary: String((x && x.summary) || '').trim(),
                 slaTargetImpact: String((x && x.sla_target_impact) || '').trim(),
                 reason: String((x && x.reason) || '').trim(),
+                source: String((x && x.source) || '').trim().toLowerCase(),
                 rank: Number((x && x.rank) || idx + 1)
             };
         });
 
+        actionList.forEach(function (item) {
+            const key = normalizeStatusKey(item.status);
+            if (!key) return;
+            actionMap[key] = item;
+        });
+
         targetEl.innerHTML = sourceRows.map(function (r, idx) {
             const tone = r.priority === 'High' ? 'high' : (r.priority === 'Medium' ? 'medium' : 'low');
-            const ai = actionMap[String(r.status || '').trim().toLowerCase()] || {};
+            const rowKey = normalizeStatusKey(r.status);
+            let ai = actionMap[rowKey] || null;
+
+            // Fuzzy fallback: status AI kadang berbeda format (contoh ada angka/prefix/simbol).
+            if (!ai && rowKey) {
+                const fuzzyKey = Object.keys(actionMap).find(function (k) {
+                    return k.includes(rowKey) || rowKey.includes(k);
+                });
+                if (fuzzyKey) ai = actionMap[fuzzyKey];
+            }
+
+            // Final fallback by rank/index to keep top-3 cards updated.
+            if (!ai) {
+                ai = actionList.find(function (x) { return x.rank === (idx + 1); }) || actionList[idx] || {};
+            }
+
             const actionText = escapeHtml(ai.action || 'monitor mingguan');
+            const sourceBadge = ai.source === 'fallback'
+                ? '<span class="badge badge-warning ms-1">Fallback</span>'
+                : '<span class="badge badge-success ms-1">AI</span>';
             const summaryText = ai.summary ? `<div class="mt-1 text-muted">Summary: ${escapeHtml(ai.summary)}</div>` : '';
             const targetText = ai.slaTargetImpact ? `<div class="mt-1 text-muted">Target SLA: ${escapeHtml(ai.slaTargetImpact)}</div>` : '';
             const reasonText = ai.reason ? `<div class="mt-1 text-muted">Alasan: ${escapeHtml(ai.reason)}</div>` : '';
@@ -285,7 +345,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                         <span class="badge ${r.priorityClass}">${r.priority}</span>
                     </div>
                     <div>Impact ${r.impactPct.toFixed(1)}% | Avg TAT ${r.avgTat.toFixed(1)} days | Avg Step ${r.avgStep.toFixed(2)}x</div>
-                    <div class="mt-1">Aksi: <span class="text-primary fw-semibold">${actionText}</span></div>
+                    <div class="mt-1">Aksi: <span class="text-primary fw-semibold">${actionText}</span>${sourceBadge}</div>
                     ${summaryText}
                     ${targetText}
                     ${reasonText}
@@ -294,7 +354,94 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         }).join('');
     }
 
-    async function requestDecisionPlaybookAI(playbookRows, totalApp, statusMetrics) {
+    function getLoanSummaryForAI() {
+        const totalApps = e2eData.length || 0;
+        const uniqueMonths = [...new Set(e2eData.map(d => d.mon))].filter(x => x !== 'Unknown').length || 1;
+        const appsPosLimit = e2eData.filter(app => safeNum(app.limit, 0) > 0);
+        const totalApprovedLimit = appsPosLimit.reduce((sum, app) => sum + safeNum(app.limit, 0), 0);
+        const avgLimitPerApp = appsPosLimit.length ? (totalApprovedLimit / appsPosLimit.length) : 0;
+        const iqr = safeNum(globalStats.q3, 0) - safeNum(globalStats.q1, 0);
+
+        return {
+            total_applications: totalApps,
+            avg_apps_per_month: Number((totalApps / uniqueMonths).toFixed(1)),
+            total_approved_limit: Number(totalApprovedLimit.toFixed(2)),
+            avg_limit_per_app: Number(avgLimitPerApp.toFixed(2)),
+            average_tat: Number(safeNum(globalStats.avg, 0).toFixed(1)),
+            mode_tat: Number(safeNum(globalStats.mod, 0).toFixed(1)),
+            q1: Number(safeNum(globalStats.q1, 0).toFixed(1)),
+            median: Number(safeNum(globalStats.med, 0).toFixed(1)),
+            q3: Number(safeNum(globalStats.q3, 0).toFixed(1)),
+            iqr: Number(iqr.toFixed(1)),
+            outlier_boundary: Number(safeNum(globalStats.high, 0).toFixed(1)),
+            total_outliers: Number(safeNum(globalStats.out, 0))
+        };
+    }
+
+    function buildBottleneckByStatusForAI(statusRows) {
+        const targetStatuses = (statusRows || []).slice(0, 3).map(r => String(r.status || '').trim()).filter(Boolean);
+        if (!targetStatuses.length) return [];
+
+        return targetStatuses.map(function (status) {
+            const rows = statusDurationBuckets[status] || [];
+            const appMap = {};
+            rows.forEach(function (item) {
+                const appRef = e2eById[item.app.id] || item.app;
+                appMap[item.app.id] = {
+                    app: appRef,
+                    statusTat: safeNum(item.tat, 0)
+                };
+            });
+            const appIds = Object.keys(appMap);
+            const statusAvgTatThreshold = safeNum((statusStats[status] || {}).avg, safeNum(globalStats.avg, 0));
+
+            const bucketStats = {};
+            bottleneckLoanSizeBuckets.forEach(function (b) {
+                bucketStats[b.label] = { cnt: 0, sumLoop: 0, sumTat: 0, breachCount: 0 };
+            });
+
+            appIds.forEach(function (id) {
+                const info = appMap[id];
+                const limit = safeNum(info.app.limit, 0);
+                if (limit < 1e9) return;
+
+                const bucket = bucketLabelForBottleneckLoan(limit);
+                const flowObj = appFlowEvents[id];
+                const events = getOrderedFlowEvents(flowObj);
+                const hits = events.filter(function (e) { return String(e.status || '').trim() === status; });
+                const returnCount = Math.max(0, hits.length - 1);
+
+                bucketStats[bucket].cnt += 1;
+                bucketStats[bucket].sumLoop += returnCount;
+                bucketStats[bucket].sumTat += safeNum(info.statusTat, 0);
+                if (safeNum(info.statusTat, 0) > statusAvgTatThreshold) {
+                    bucketStats[bucket].breachCount += 1;
+                }
+            });
+
+            const bucketRows = bottleneckLoanSizeBuckets.map(function (b) {
+                const d = bucketStats[b.label];
+                if (!d || d.cnt <= 0) return null;
+                const breachPct = (d.breachCount / d.cnt) * 100;
+                return {
+                    loan_size: b.label,
+                    total_applications: d.cnt,
+                    avg_loop: Number((d.sumLoop / d.cnt).toFixed(2)),
+                    avg_tat: Number((d.sumTat / d.cnt).toFixed(1)),
+                    avg_status_tat: Number(statusAvgTatThreshold.toFixed(1)),
+                    sla_breach_count: d.breachCount,
+                    sla_breach_pct: Number(breachPct.toFixed(1))
+                };
+            }).filter(Boolean);
+
+            return {
+                status: status,
+                rows: bucketRows
+            };
+        });
+    }
+
+    async function requestDecisionPlaybookAI(playbookRows, totalApp, statusMetrics, provider) {
         const now = Date.now();
         if (decisionPlaybookAiRetryAt && now < decisionPlaybookAiRetryAt) {
             throw new Error('Decision Playbook AI cooldown');
@@ -325,7 +472,16 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             };
         });
 
-        const cacheKey = JSON.stringify({ total_app: totalApp || 0, rows: compact, outlier_rows: outlierCompact });
+        const loanSummary = getLoanSummaryForAI();
+        const bottleneckByStatus = buildBottleneckByStatusForAI(playbookRows);
+        const cacheKey = JSON.stringify({
+            provider: provider || '',
+            total_app: totalApp || 0,
+            rows: compact,
+            outlier_rows: outlierCompact,
+            loan_summary: loanSummary,
+            bottleneck_by_status: bottleneckByStatus
+        });
         if (decisionPlaybookCache.has(cacheKey)) {
             return decisionPlaybookCache.get(cacheKey);
         }
@@ -337,9 +493,12 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                 'Accept': 'application/json'
             },
             body: JSON.stringify({
+                provider: provider || '',
                 total_app: Number(totalApp || 0),
                 rows: compact,
-                outlier_rows: outlierCompact
+                outlier_rows: outlierCompact,
+                loan_summary: loanSummary,
+                bottleneck_by_status: bottleneckByStatus
             })
         });
 
@@ -357,12 +516,36 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                 action: String((x && x.action) || '').trim(),
                 summary: String((x && x.summary) || '').trim(),
                 sla_target_impact: String((x && x.sla_target_impact) || '').trim(),
-                reason: String((x && x.reason) || '').trim()
+                reason: String((x && x.reason) || '').trim(),
+                source: String((x && x.source) || '').trim().toLowerCase()
             };
         }) : [];
 
         decisionPlaybookCache.set(cacheKey, normalized);
         return normalized;
+    }
+
+    async function triggerDecisionPlaybookAnalysis(provider) {
+        const p = String(provider || '').trim().toLowerCase();
+        if (p !== 'cloudflare' && p !== 'gemini') return;
+        setPlaybookProviderBadge(p);
+
+        const recoEl = document.getElementById('mgmtActionReco');
+        if (!latestPlaybookContext || !recoEl) return;
+
+        const { top5, topImpact3, totalApp, stMetrics, fallback } = latestPlaybookContext;
+        const requestId = ++decisionPlaybookReqSeq;
+        recoEl.insertAdjacentHTML('afterbegin', `<div class="small text-muted mb-2">Analyzing with ${p}...</div>`);
+
+        requestDecisionPlaybookAI(top5, totalApp, stMetrics, p)
+            .then(function (aiActions) {
+                if (requestId !== decisionPlaybookReqSeq) return;
+                renderDecisionPlaybookItems(recoEl, topImpact3, aiActions);
+            })
+            .catch(function (_) {
+                if (requestId !== decisionPlaybookReqSeq) return;
+                renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
+            });
     }
 
     // FUNGSI NORMALISASI PURPOSE
@@ -2710,22 +2893,11 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
 
         const topImpact3 = [...eligibleRows].sort((a, b) => b.impactPct - a.impactPct).slice(0, 3);
         const fallback = buildDecisionPlaybookFallback(topImpact3);
+        latestPlaybookContext = { top5, topImpact3, totalApp, stMetrics, fallback };
         renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
-
-        if (!topImpact3.length) return;
-
-        const requestId = ++decisionPlaybookReqSeq;
-        recoEl.insertAdjacentHTML('afterbegin', `<div class="small text-muted mb-2">Generating AI recommendation...</div>`);
-
-        requestDecisionPlaybookAI(top5, totalApp, stMetrics)
-            .then(function (aiActions) {
-                if (requestId !== decisionPlaybookReqSeq) return;
-                renderDecisionPlaybookItems(recoEl, topImpact3, aiActions);
-            })
-            .catch(function (_) {
-                if (requestId !== decisionPlaybookReqSeq) return;
-                renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
-            });
+        if (topImpact3.length) {
+            recoEl.insertAdjacentHTML('afterbegin', `<div class="small text-muted mb-2">Pilih AI Cloudflare/Gemini untuk generate analisa.</div>`);
+        }
     }
 
     function initActionSimulator(stMetrics) {
@@ -4108,10 +4280,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
-
 
 
 

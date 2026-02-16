@@ -15,7 +15,9 @@ class AiProxyController extends Controller
         $payload = $request->validate([
             'question' => ['required', 'string', 'max:2000'],
             'context' => ['nullable', 'string', 'max:6000'],
+            'provider' => ['nullable', 'in:cloudflare,gemini'],
         ]);
+        $provider = $this->resolveProvider($payload['provider'] ?? null);
 
         $prompt = implode("\n", [
             'Konteks Dashboard:',
@@ -25,10 +27,13 @@ class AiProxyController extends Controller
             (string) $payload['question'],
         ]);
 
-        $text = $this->runCloudflareAi(
+        $text = $this->runAiByProvider(
+            provider: $provider,
             prompt: $prompt,
             systemPrompt: 'Anda asisten analis LOS dashboard. Jawab ringkas dalam bahasa Indonesia. Jika data kurang, jelaskan keterbatasannya.',
-            model: config('services.cloudflare_ai.chat_model'),
+            model: $provider === 'gemini'
+                ? config('services.gemini_ai.chat_model')
+                : config('services.cloudflare_ai.chat_model'),
             maxTokens: 240,
             temperature: 0.2,
             useDecisionToken: false
@@ -42,6 +47,7 @@ class AiProxyController extends Controller
     public function playbook(Request $request): JsonResponse
     {
         $payload = $request->validate([
+            'provider' => ['nullable', 'in:cloudflare,gemini'],
             'total_app' => ['nullable', 'integer', 'min:0'],
             'rows' => ['required', 'array', 'min:1', 'max:5'],
             'rows.*.status' => ['required', 'string', 'max:120'],
@@ -59,7 +65,31 @@ class AiProxyController extends Controller
             'outlier_rows.*.iqr' => ['nullable', 'numeric', 'min:0'],
             'outlier_rows.*.boundary' => ['nullable', 'numeric', 'min:0'],
             'outlier_rows.*.outlier' => ['nullable', 'integer', 'min:0'],
+            'loan_summary' => ['nullable', 'array'],
+            'loan_summary.total_applications' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.avg_apps_per_month' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.total_approved_limit' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.avg_limit_per_app' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.average_tat' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.mode_tat' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.q1' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.median' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.q3' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.iqr' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.outlier_boundary' => ['nullable', 'numeric', 'min:0'],
+            'loan_summary.total_outliers' => ['nullable', 'numeric', 'min:0'],
+            'bottleneck_by_status' => ['nullable', 'array', 'max:3'],
+            'bottleneck_by_status.*.status' => ['required_with:bottleneck_by_status', 'string', 'max:120'],
+            'bottleneck_by_status.*.rows' => ['required_with:bottleneck_by_status', 'array', 'max:10'],
+            'bottleneck_by_status.*.rows.*.loan_size' => ['required_with:bottleneck_by_status', 'string', 'max:24'],
+            'bottleneck_by_status.*.rows.*.total_applications' => ['nullable', 'integer', 'min:0'],
+            'bottleneck_by_status.*.rows.*.avg_loop' => ['nullable', 'numeric', 'min:0'],
+            'bottleneck_by_status.*.rows.*.avg_tat' => ['nullable', 'numeric', 'min:0'],
+            'bottleneck_by_status.*.rows.*.avg_status_tat' => ['nullable', 'numeric', 'min:0'],
+            'bottleneck_by_status.*.rows.*.sla_breach_count' => ['nullable', 'integer', 'min:0'],
+            'bottleneck_by_status.*.rows.*.sla_breach_pct' => ['nullable', 'numeric', 'min:0'],
         ]);
+        $provider = $this->resolveProvider($payload['provider'] ?? null);
 
         $rows = collect($payload['rows'])
             ->take(5)
@@ -132,24 +162,63 @@ class AiProxyController extends Controller
             '- sla_target_impact harus berupa target terukur, contoh: "SLA breach -10% dalam 2 bulan"',
             '- reason jelaskan pemicu utama (tat/step/outlier/impact)',
             '- action harus fokus ke penurunan SLA breach/TAT',
+            '- gunakan juga loan_summary dan bottleneck_by_status (loan size, loop, avg tat, avg status tat, SLA breach)',
             '',
             'Total app: '.((int) ($payload['total_app'] ?? 0)),
+            'Loan summary: '.json_encode($payload['loan_summary'] ?? [], JSON_UNESCAPED_UNICODE),
             'Status profiles (top 3): '.json_encode($statusProfiles, JSON_UNESCAPED_UNICODE),
+            'Bottleneck detail by status: '.json_encode($payload['bottleneck_by_status'] ?? [], JSON_UNESCAPED_UNICODE),
         ]);
 
-        $text = $this->runCloudflareAi(
+        $text = $this->runAiByProvider(
+            provider: $provider,
             prompt: $prompt,
             systemPrompt: 'Anda analis proses kredit. Berikan rekomendasi action yang ringkas dan realistis.',
-            model: config('services.cloudflare_ai.playbook_model'),
-            maxTokens: 260,
+            model: $provider === 'gemini'
+                ? config('services.gemini_ai.playbook_model')
+                : config('services.cloudflare_ai.playbook_model'),
+            maxTokens: 320,
             temperature: 0.2,
             useDecisionToken: true
         );
 
+        $actions = $this->enrichMissingActionsPerStatus(
+            actions: $this->parsePlaybookActions($text),
+            statusProfiles: $statusProfiles,
+            loanSummary: (array) ($payload['loan_summary'] ?? []),
+            bottleneckByStatus: (array) ($payload['bottleneck_by_status'] ?? []),
+            provider: $provider
+        );
+
+        $alignedActions = $this->alignActionsToTopStatuses($actions, $statusProfiles);
+
         return response()->json([
-            'actions' => $this->parsePlaybookActions($text),
+            'actions' => $alignedActions,
             'raw' => $text,
+            'provider' => $provider,
         ]);
+    }
+
+    private function resolveProvider(?string $provider): string
+    {
+        $p = strtolower(trim((string) $provider));
+        return in_array($p, ['cloudflare', 'gemini'], true) ? $p : 'cloudflare';
+    }
+
+    private function runAiByProvider(
+        string $provider,
+        string $prompt,
+        string $systemPrompt,
+        ?string $model,
+        int $maxTokens,
+        float $temperature,
+        bool $useDecisionToken
+    ): string {
+        if ($provider === 'gemini') {
+            return $this->runGeminiAi($prompt, $systemPrompt, $model, $maxTokens, $temperature);
+        }
+
+        return $this->runCloudflareAi($prompt, $systemPrompt, $model, $maxTokens, $temperature, $useDecisionToken);
     }
 
     private function runCloudflareAi(
@@ -209,6 +278,57 @@ class AiProxyController extends Controller
         return $text;
     }
 
+    private function runGeminiAi(
+        string $prompt,
+        string $systemPrompt,
+        ?string $model,
+        int $maxTokens,
+        float $temperature
+    ): string {
+        $apiKey = trim((string) config('services.gemini_ai.api_key'));
+        $modelName = trim((string) $model);
+        if ($apiKey === '' || $modelName === '') {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Gemini AI configuration missing. Please check .env values.',
+            ], 503));
+        }
+
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelName}:generateContent?key={$apiKey}";
+        $userText = $systemPrompt."\n\n".$prompt;
+
+        $response = Http::timeout(30)
+            ->acceptJson()
+            ->post($url, [
+                'contents' => [[
+                    'role' => 'user',
+                    'parts' => [[
+                        'text' => $userText,
+                    ]],
+                ]],
+                'generationConfig' => [
+                    'temperature' => $temperature,
+                    'maxOutputTokens' => $maxTokens,
+                ],
+            ]);
+
+        if (! $response->successful()) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Gemini AI request failed.',
+                'status' => $response->status(),
+                'error' => $response->json() ?? $response->body(),
+            ], $response->status()));
+        }
+
+        $data = $response->json();
+        $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        if (! is_string($text) || trim($text) === '') {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Gemini AI returned empty response.',
+            ], 502));
+        }
+        return $text;
+    }
+
     private function parsePlaybookActions(string $text): array
     {
         $start = strpos($text, '[');
@@ -221,9 +341,8 @@ class AiProxyController extends Controller
         if (! $hasFullArray) {
             $decoded = $this->extractPartialJsonObjects($text);
         } else {
-            try {
-                $decoded = json_decode($jsonText, true, 512, JSON_THROW_ON_ERROR);
-            } catch (\Throwable $e) {
+            $decoded = $this->decodeJsonLoose($jsonText);
+            if (!is_array($decoded)) {
                 $decoded = $this->extractPartialJsonObjects($text);
             }
         }
@@ -231,6 +350,10 @@ class AiProxyController extends Controller
         if (is_array($decoded) && count($decoded) === 0 && str_contains($text, '{')) {
             // Fallback tambahan: model kadang kirim array rusak tapi object di tengah masih valid.
             $decoded = $this->extractPartialJsonObjects($text);
+        }
+        if (is_array($decoded) && count($decoded) === 0) {
+            // Fallback terakhir: ekstrak pair key-value dari teks parsial meski JSON rusak.
+            $decoded = $this->extractActionsByPattern($text);
         }
 
         if (! is_array($decoded)) {
@@ -250,6 +373,228 @@ class AiProxyController extends Controller
             ->all();
     }
 
+    private function enrichMissingActionsPerStatus(array $actions, array $statusProfiles, array $loanSummary, array $bottleneckByStatus, string $provider): array
+    {
+        $normalize = fn (string $s) => preg_replace('/[^a-z0-9]/', '', strtolower($s));
+        $seedByKey = [];
+        foreach ($actions as $a) {
+            $k = $normalize((string) ($a['status'] ?? ''));
+            if ($k !== '' && !isset($seedByKey[$k])) {
+                $seedByKey[$k] = $a;
+            }
+        }
+
+        $bottleneckMap = [];
+        foreach ($bottleneckByStatus as $row) {
+            $status = (string) ($row['status'] ?? '');
+            $k = $normalize($status);
+            if ($k !== '') {
+                $bottleneckMap[$k] = $row;
+            }
+        }
+
+        $built = [];
+        foreach ($statusProfiles as $profile) {
+            $status = (string) ($profile['status'] ?? '');
+            $k = $normalize($status);
+            if ($k === '') {
+                continue;
+            }
+
+            $seed = $seedByKey[$k] ?? null;
+            $single = null;
+            $singlePrompt = implode("\n", [
+                'Analisis 1 status prioritas untuk menurunkan SLA breach/TAT.',
+                'Balas HANYA JSON object valid (tanpa markdown).',
+                'Format:',
+                '{"status":"...","action":"...","summary":"...","sla_target_impact":"...","reason":"..."}',
+                'Batasan:',
+                '- action max 6 kata',
+                '- summary max 20 kata',
+                '- sla_target_impact max 10 kata',
+                '- reason max 16 kata',
+                '- gunakan minimal 2 angka dari data status',
+                '',
+                'Loan summary: '.json_encode($loanSummary, JSON_UNESCAPED_UNICODE),
+                'Status profile: '.json_encode($profile, JSON_UNESCAPED_UNICODE),
+                'Bottleneck status detail: '.json_encode($bottleneckMap[$k] ?? [], JSON_UNESCAPED_UNICODE),
+            ]);
+
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                try {
+                    $singleText = $this->runAiByProvider(
+                        provider: $provider,
+                        prompt: $singlePrompt,
+                        systemPrompt: 'Anda analis proses kredit. Berikan rekomendasi action yang ringkas dan realistis.',
+                        model: $provider === 'gemini'
+                            ? config('services.gemini_ai.playbook_model')
+                            : config('services.cloudflare_ai.playbook_model'),
+                        maxTokens: 200,
+                        temperature: 0.2,
+                        useDecisionToken: true
+                    );
+                    $parsed = $this->parseSinglePlaybookAction($singleText, $status);
+                    if (!empty($parsed['action'])) {
+                        $single = $parsed;
+                        break;
+                    }
+                } catch (\Throwable $e) {
+                    // Retry next attempt
+                }
+            }
+
+            if ($single && !empty($single['action'])) {
+                $built[] = [
+                    'status' => $status,
+                    'action' => trim((string) ($single['action'] ?? '')),
+                    'summary' => trim((string) ($single['summary'] ?? '')),
+                    'sla_target_impact' => trim((string) ($single['sla_target_impact'] ?? '')),
+                    'reason' => trim((string) ($single['reason'] ?? '')),
+                    'source' => 'ai',
+                ];
+                continue;
+            }
+
+            if ($seed && !empty($seed['action'])) {
+                $built[] = [
+                    'status' => $status,
+                    'action' => trim((string) ($seed['action'] ?? '')),
+                    'summary' => trim((string) ($seed['summary'] ?? '')),
+                    'sla_target_impact' => trim((string) ($seed['sla_target_impact'] ?? '')),
+                    'reason' => trim((string) ($seed['reason'] ?? '')),
+                    'source' => 'ai',
+                ];
+                continue;
+            }
+
+            $fallback = $this->buildHeuristicActionFromProfile($profile);
+            $built[] = [
+                'status' => $status,
+                'action' => trim((string) ($fallback['action'] ?? 'monitor mingguan')),
+                'summary' => trim((string) ($fallback['summary'] ?? '')),
+                'sla_target_impact' => trim((string) ($fallback['sla_target_impact'] ?? '')),
+                'reason' => trim((string) ($fallback['reason'] ?? '')),
+                'source' => 'fallback',
+            ];
+        }
+
+        return array_slice($built, 0, 3);
+    }
+
+    private function alignActionsToTopStatuses(array $actions, array $statusProfiles): array
+    {
+        $normalize = fn (string $s) => preg_replace('/[^a-z0-9]/', '', strtolower($s));
+
+        $byKey = [];
+        foreach ($actions as $idx => $a) {
+            $k = $normalize((string) ($a['status'] ?? ''));
+            if ($k !== '' && !isset($byKey[$k])) {
+                $byKey[$k] = $a;
+            }
+        }
+
+        $aligned = [];
+        foreach ($statusProfiles as $idx => $profile) {
+            $status = (string) ($profile['status'] ?? '');
+            $k = $normalize($status);
+            $picked = null;
+            $source = 'ai';
+
+            if ($k !== '' && isset($byKey[$k])) {
+                $picked = $byKey[$k];
+            } else {
+                // Fuzzy match if AI status slightly differs.
+                foreach ($byKey as $candidateKey => $candidate) {
+                    if ($candidateKey !== '' && (str_contains($candidateKey, $k) || str_contains($k, $candidateKey))) {
+                        $picked = $candidate;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback by index if no match.
+            if (!$picked && isset($actions[$idx]) && is_array($actions[$idx])) {
+                $picked = $actions[$idx];
+            }
+
+            // Deterministic final fallback so top-3 always filled.
+            if (!$picked) {
+                $picked = $this->buildHeuristicActionFromProfile($profile);
+                $source = 'fallback';
+            }
+            if ($picked && isset($picked['source'])) {
+                $source = trim((string) $picked['source']) !== '' ? trim((string) $picked['source']) : $source;
+            }
+
+            $action = trim((string) ($picked['action'] ?? ''));
+            if ($action === '') {
+                $picked = $this->buildHeuristicActionFromProfile($profile);
+                $source = 'fallback';
+                $action = trim((string) ($picked['action'] ?? 'monitor mingguan'));
+            }
+
+            $aligned[] = [
+                'status' => $status,
+                'action' => $action !== '' ? $action : 'monitor mingguan',
+                'summary' => trim((string) ($picked['summary'] ?? '')),
+                'sla_target_impact' => trim((string) ($picked['sla_target_impact'] ?? '')),
+                'reason' => trim((string) ($picked['reason'] ?? '')),
+                'source' => $source,
+            ];
+        }
+
+        return array_slice($aligned, 0, 3);
+    }
+
+    private function buildHeuristicActionFromProfile(array $profile): array
+    {
+        $impact = (float) ($profile['impact_pct'] ?? 0);
+        $avgTat = (float) ($profile['avg_tat_days'] ?? 0);
+        $avgStep = (float) ($profile['avg_step'] ?? 0);
+        $outlier = (int) ($profile['outlier_count'] ?? 0);
+
+        $action = 'monitor mingguan';
+        if ($avgStep >= 1.5) {
+            $action = 'pangkas loop approval';
+        } elseif ($outlier >= 8) {
+            $action = 'tutup outlier prioritas';
+        } elseif ($impact >= 15 || $avgTat >= 250) {
+            $action = 'percepat SLA internal';
+        }
+
+        return [
+            'action' => $action,
+            'summary' => "Impact {$impact}% | Avg TAT {$avgTat} | Avg Step {$avgStep}",
+            'sla_target_impact' => 'SLA breach -8% 2 bulan',
+            'reason' => "Pemicu utama: tat {$avgTat}, step {$avgStep}, outlier {$outlier}",
+        ];
+    }
+
+    private function parseSinglePlaybookAction(string $text, string $fallbackStatus): array
+    {
+        if (preg_match('/\{[^{}]*\}/', $text, $m)) {
+            $candidate = $m[0];
+            $item = $this->decodeJsonLoose($candidate);
+            if (is_array($item)) {
+                return [
+                    'status' => trim((string) ($item['status'] ?? $fallbackStatus)),
+                    'action' => trim((string) ($item['action'] ?? '')),
+                    'summary' => trim((string) ($item['summary'] ?? '')),
+                    'sla_target_impact' => trim((string) ($item['sla_target_impact'] ?? '')),
+                    'reason' => trim((string) ($item['reason'] ?? '')),
+                ];
+            }
+        }
+
+        return [
+            'status' => $fallbackStatus,
+            'action' => '',
+            'summary' => '',
+            'sla_target_impact' => '',
+            'reason' => '',
+        ];
+    }
+
     private function extractPartialJsonObjects(string $text): array
     {
         preg_match_all('/\{[^{}]*\}/', $text, $matches);
@@ -260,16 +605,56 @@ class AiProxyController extends Controller
 
         $rows = [];
         foreach ($objects as $obj) {
-            try {
-                $item = json_decode($obj, true, 512, JSON_THROW_ON_ERROR);
-                if (is_array($item)) {
-                    $rows[] = $item;
-                }
-            } catch (\Throwable $e) {
-                // Ignore malformed partial chunks.
+            $item = $this->decodeJsonLoose($obj);
+            if (is_array($item)) {
+                $rows[] = $item;
             }
         }
 
         return $rows;
+    }
+
+    private function extractActionsByPattern(string $text): array
+    {
+        $clean = str_replace(['\\"', '\\/'], ['"', '/'], $text);
+        $clean = stripslashes($clean);
+
+        $pattern = '/"status"\s*:\s*"([^"]+)".*?"action"\s*:\s*"([^"]+)".*?"summary"\s*:\s*"([^"]+)".*?"sla_target_impact"\s*:\s*"([^"]+)".*?"reason"\s*:\s*"([^"]+)"/si';
+        preg_match_all($pattern, $clean, $matches, PREG_SET_ORDER);
+        if (empty($matches)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($matches as $m) {
+            $rows[] = [
+                'status' => trim((string) ($m[1] ?? '')),
+                'action' => trim((string) ($m[2] ?? '')),
+                'summary' => trim((string) ($m[3] ?? '')),
+                'sla_target_impact' => trim((string) ($m[4] ?? '')),
+                'reason' => trim((string) ($m[5] ?? '')),
+            ];
+        }
+
+        return $rows;
+    }
+
+    private function decodeJsonLoose(string $json): mixed
+    {
+        $candidates = [
+            $json,
+            str_replace(['\\"', '\\/'], ['"', '/'], $json),
+            stripslashes($json),
+        ];
+
+        foreach ($candidates as $candidate) {
+            try {
+                return json_decode($candidate, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\Throwable $e) {
+                // try next candidate
+            }
+        }
+
+        return null;
     }
 }

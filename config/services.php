@@ -39,4 +39,10 @@ return [
         'playbook_model' => env('CLOUDFLARE_AI_PLAYBOOK_MODEL', '@cf/meta/llama-3.1-8b-instruct'),
     ],
 
+    'gemini_ai' => [
+        'api_key' => env('GEMINI_AI_API_KEY'),
+        'chat_model' => env('GEMINI_AI_CHAT_MODEL', 'gemini-2.0-flash'),
+        'playbook_model' => env('GEMINI_AI_PLAYBOOK_MODEL', 'gemini-2.0-flash'),
+    ],
+
 ];

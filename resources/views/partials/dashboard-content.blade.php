@@ -242,8 +242,12 @@
                     </div>
                     <div class="col-md-4">
                         <div class="chart-card border-primary">
-                            <div class="chart-head text-primary">
+                            <div class="chart-head text-primary d-flex justify-content-between align-items-center">
                                 <span><i class="fal fa-bolt me-2"></i>Decision Playbook</span>
+                                <div class="d-flex align-items-center gap-1">
+                                    <span id="playbookProviderCloudflare" class="badge badge-secondary" style="cursor:pointer;" onclick="triggerDecisionPlaybookAnalysis('cloudflare')">AI Cloudflare</span>
+                                    <span id="playbookProviderGemini" class="badge badge-secondary" style="cursor:pointer;" onclick="triggerDecisionPlaybookAnalysis('gemini')">AI Gemini</span>
+                                </div>
                             </div>
                             <div class="small text-muted mb-2" id="mgmtActionSummary">Menunggu data...</div>
                             <div id="mgmtActionReco" class="small">
@@ -669,11 +673,15 @@
 
 <div class="ai-chat-panel" id="aiChatPanel">
     <div class="ai-chat-head">
-        <span><i class="fal fa-star me-1"></i>Gemini Assistant</span>
+        <span id="aiChatProviderLabel"><i class="fal fa-star me-1"></i>AI Assistant</span>
+        <div class="d-flex align-items-center gap-1 me-2">
+            <span id="chatProviderCloudflare" class="badge badge-secondary" style="cursor:pointer;" onclick="setChatProvider('cloudflare')">Cloudflare</span>
+            <span id="chatProviderGemini" class="badge badge-secondary" style="cursor:pointer;" onclick="setChatProvider('gemini')">Gemini</span>
+        </div>
         <button class="btn btn-sm btn-outline-default waves-effect waves-themed py-0 px-2" onclick="toggleAIChat()">x</button>
     </div>
     <div class="ai-chat-log" id="aiChatLog">
-        <div class="ai-msg bot">Halo. Saya bisa bantu jelaskan insight dashboard ini. Coba tanya: "kenapa SLA breach tinggi?"</div>
+        <div class="ai-msg bot">Pilih provider AI dulu (Cloudflare atau Gemini), lalu tanya insight dashboard.</div>
     </div>
     <div class="ai-chat-foot">
         <textarea id="aiChatInput" class="form-control form-control-sm" placeholder="Tulis pertanyaan..."></textarea>
@@ -708,8 +716,6 @@
         </div>
     </div>
 </div>
-
-
 
 
 
