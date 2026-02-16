@@ -11,6 +11,18 @@ Route::post('/dashboard/import', [DashboardApiController::class, 'import'])->nam
 Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class, 'importChunk'])->name('api.dashboard.import.chunk');
 Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
 Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
+// Removed generic ParameterController API; using per-model API resources below.
+
+// API routes for master parameters (JSON CRUD)
+Route::apiResource('parameters/branches', App\Http\Controllers\MstrBranchController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/rms', App\Http\Controllers\MstrRmController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/bi_industries', App\Http\Controllers\MstrBiIndustryController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/cimb_sectors', App\Http\Controllers\MstrCimbSectorController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/constitutions', App\Http\Controllers\MstrConstitutionController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/economy_sectors', App\Http\Controllers\MstrEconomySectorController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/bi_collectabilities', App\Http\Controllers\MstrBiCollectabilityController::class)->only(['index','store','update','destroy']);
+Route::apiResource('parameters/basel_types', App\Http\Controllers\MstrBaselTypeController::class)->only(['index','store','update','destroy']);
+
 
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();

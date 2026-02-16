@@ -1,5 +1,5 @@
 <div class="main-wrap">
-    <div class="header">
+    <div class="header" style="background: linear-gradient(120deg, #3f4d9f 0%, #4e73df 35%, #39a2db 100%); color: #fff;">
         <div>
             <h4 class="mb-0 fw-bold"><i class="fal fa-chart-pie mr-2"></i><span>Executive LOS Dashboard</span></h4>
             <small class="opacity-75">Strategic Insights & Performance Monitoring</small>

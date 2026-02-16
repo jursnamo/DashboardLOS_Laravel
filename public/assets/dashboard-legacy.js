@@ -328,8 +328,21 @@ ${userText}`
             text.textContent = message;
         }
 
-        overlay.classList.toggle('d-none', !isLoading);
+        // When asked to show, make visible immediately.
+        if (isLoading) {
+            overlay.classList.remove('d-none');
+            return;
+        }
+
+        // When asked to hide, only hide if no global 'hold' is set.
+        // Hiding is normally controlled by dispatching the custom event 'dashboard:ready'.
+        overlay.classList.add('d-none');
     }
+
+    // When the dashboard finishes rendering, other code will dispatch this event.
+    document.addEventListener('dashboard:ready', function () {
+        setDashboardLoading(false);
+    });
     function updateImportProgress(percent, totalRows, label) {
         const bar = document.getElementById('importProgressBar');
         const text = document.getElementById('importProgressText');
@@ -507,10 +520,12 @@ ${userText}`
             await processData();
         } catch (err) {
             alert(err.message || 'Terjadi kesalahan saat load dashboard dari API.');
+            // Ensure overlay is cleared on error
+            window.dispatchEvent(new Event('dashboard:ready'));
         } finally {
             skipPersistImport = false;
             isDashboardLoading = false;
-            setDashboardLoading(false);
+            // Do not hide overlay here; wait for rendering code to dispatch 'dashboard:ready'
         }
     }
 
@@ -1031,6 +1046,9 @@ ${userText}`
 
         // Create Charts
         createCharts(e2eData, globalStats, statusAgg, apps);
+
+        // Signal that the dashboard has finished rendering and it's safe to hide the loading overlay
+        try { window.dispatchEvent(new Event('dashboard:ready')); } catch (e) {}
 
         document.getElementById('step2').classList.remove('active');
         document.getElementById('step3').classList.add('active');

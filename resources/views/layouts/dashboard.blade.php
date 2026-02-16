@@ -77,7 +77,19 @@ function resetSettings() {
 }
 </script>
 
-@yield('content')
+<div class="page-wrapper">
+    <div class="page-inner">
+        @include('partials.sidebar')
+
+        <div class="page-content-wrapper">
+            @include('partials.header')
+            <main id="js-page-content" role="main" class="page-content">
+                @yield('content')
+            </main>
+        </div>
+    </div>
+</div>
+        @include('partials.modals')
 
 <script src="{{ asset('assets/smartadmin4/js/vendors.bundle.js') }}"></script>
 <script src="{{ asset('assets/smartadmin4/js/app.bundle.js') }}"></script>
