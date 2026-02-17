@@ -256,6 +256,20 @@
         .ai-msg.user { background: #dbeafe; border: 1px solid #bfdbfe; }
         .ai-msg.bot { background: #eef2ff; border: 1px solid #c7d2fe; }
         .ai-msg.err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+        .ai-sim-block {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 8px 10px;
+            white-space: pre-line;
+        }
+        .ai-sim-title {
+            font-size: 0.68rem;
+            font-weight: 800;
+            color: #0f172a;
+            letter-spacing: 0.03em;
+            margin-bottom: 4px;
+        }
         .ai-chat-foot {
             border-top: 1px solid #e2e8f0;
             padding: 8px;
@@ -556,6 +570,14 @@
         #actionSimCard .value.text-primary {
             color: #b91c1c !important;
         }
+        #actionSimCard.sim-refresh-pulse {
+            animation: simPulse 0.55s ease;
+        }
+        @keyframes simPulse {
+            0% { box-shadow: 0 0 0 rgba(185, 28, 28, 0); }
+            40% { box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.15); }
+            100% { box-shadow: 0 0 0 rgba(185, 28, 28, 0); }
+        }
         .sim-controls-shell {
             border: 1px solid #e2e8f0;
             border-radius: 12px;
@@ -736,4 +758,3 @@
             line-height: 1.35;
             text-align: left;
         }
-

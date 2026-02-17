@@ -13,6 +13,8 @@ Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class,
 Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
 Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
 Route::post('/ai/chat', [AiProxyController::class, 'chat'])->name('api.ai.chat');
+Route::post('/ai/detect-intent', [AiProxyController::class, 'detectIntent'])->name('api.ai.detect_intent');
+Route::post('/ai/simulation-insight', [AiProxyController::class, 'simulationInsight'])->name('api.ai.simulation_insight');
 Route::post('/ai/playbook', [AiProxyController::class, 'playbook'])->name('api.ai.playbook');
 // Removed generic ParameterController API; using per-model API resources below.
 

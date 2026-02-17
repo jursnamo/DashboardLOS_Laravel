@@ -21,6 +21,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     let baseAppFlowEvents = {};
     let simLastSnapshot = null;
     const AI_CHAT_API = '/api/ai/chat';
+    const AI_DETECT_INTENT_API = '/api/ai/detect-intent';
+    const AI_SIMULATION_INSIGHT_API = '/api/ai/simulation-insight';
     const AI_PLAYBOOK_API = '/api/ai/playbook';
     const DASHBOARD_IMPORT_API = '/api/dashboard/import';
     const DASHBOARD_CONTENT_API = '/api/dashboard/content';
@@ -202,6 +204,306 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         log.scrollTop = log.scrollHeight;
     }
 
+    function appendAIRichMessage(html, cls = 'bot') {
+        const log = document.getElementById('aiChatLog');
+        const div = document.createElement('div');
+        div.className = `ai-msg ${cls}`;
+        div.innerHTML = html;
+        log.appendChild(div);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    async function detectChatIntent(question) {
+        const res = await fetch(AI_DETECT_INTENT_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ question: question || '' })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.message || `Intent detection gagal (${res.status})`);
+        }
+        return data;
+    }
+
+    function normalizeStatusForMatch(value) {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    }
+
+    function resolveSimulatorStatus(statusFromIntent) {
+        const target = normalizeStatusForMatch(statusFromIntent);
+        const statuses = (simStatusOrder || []).filter(Boolean);
+        if (!target || !statuses.length) return null;
+
+        let exact = statuses.find(s => normalizeStatusForMatch(s) === target);
+        if (exact) return exact;
+
+        exact = statuses.find(s => {
+            const n = normalizeStatusForMatch(s);
+            return n.includes(target) || target.includes(n);
+        });
+        if (exact) return exact;
+
+        const splitTokens = function (text) {
+            return String(text || '')
+                .toLowerCase()
+                .split(/[^a-z0-9]+/g)
+                .map(x => x.trim())
+                .filter(x => x.length >= 3);
+        };
+        const distance = function (a, b) {
+            const m = a.length;
+            const n = b.length;
+            const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+            for (let i = 0; i <= m; i++) dp[i][0] = i;
+            for (let j = 0; j <= n; j++) dp[0][j] = j;
+            for (let i = 1; i <= m; i++) {
+                for (let j = 1; j <= n; j++) {
+                    const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                    dp[i][j] = Math.min(
+                        dp[i - 1][j] + 1,
+                        dp[i][j - 1] + 1,
+                        dp[i - 1][j - 1] + cost
+                    );
+                }
+            }
+            return dp[m][n];
+        };
+        const hasApproxToken = function (needle, tokens) {
+            return (tokens || []).some(tok => {
+                if (tok === needle) return true;
+                if (Math.abs(tok.length - needle.length) > 2) return false;
+                return distance(tok, needle) <= 1;
+            });
+        };
+
+        const targetTokens = splitTokens(statusFromIntent);
+        if (!targetTokens.length) return null;
+
+        let best = null;
+        let bestScore = 0;
+        statuses.forEach(status => {
+            const statusTokens = splitTokens(status);
+            if (!statusTokens.length) return;
+            const matched = targetTokens.filter(t => hasApproxToken(t, statusTokens)).length;
+            const score = matched / targetTokens.length;
+            if (score > bestScore) {
+                bestScore = score;
+                best = status;
+            }
+        });
+
+        return bestScore >= 0.6 ? best : null;
+    }
+
+    function setSimulatorSingleStatus(status, value) {
+        return setSimulatorMultipleStatuses([{ status: status, value: value }]);
+    }
+
+    function setSimulatorMultipleStatuses(items) {
+        const statuses = (simStatusOrder || []).filter(Boolean);
+        if (!statuses.length) {
+            throw new Error('Simulator belum siap: status tidak tersedia.');
+        }
+        const wanted = {};
+        (items || []).forEach(item => {
+            const s = String(item && item.status || '').trim();
+            if (!s) return;
+            wanted[s] = safeNum(item && item.value, 0);
+        });
+
+        statuses.forEach(s => {
+            simReductionByStatus[s] = Object.prototype.hasOwnProperty.call(wanted, s) ? wanted[s] : 0;
+        });
+        document.querySelectorAll('#simStatusControls input[data-status], #simStatusControlsFloating input[data-status]').forEach(input => {
+            const st = input.getAttribute('data-status') || '';
+            const v = Object.prototype.hasOwnProperty.call(wanted, st) ? wanted[st] : 0;
+            input.value = v;
+            const row = input.closest('.sim-row');
+            const pct = row ? row.querySelector('.sim-pct') : null;
+            if (pct) pct.textContent = `${v}%`;
+        });
+    }
+
+    function triggerSimulationRefreshAnimation() {
+        const card = document.getElementById('actionSimCard');
+        if (!card) return;
+        card.classList.remove('sim-refresh-pulse');
+        void card.offsetWidth;
+        card.classList.add('sim-refresh-pulse');
+    }
+
+    function buildSimulatorResultFromSnapshot(snapshot) {
+        if (!snapshot) return null;
+        const baselineSla = safeNum(snapshot.breachBase, 0);
+        const projectedSla = safeNum(snapshot.breachProj, 0);
+        const avgBefore = safeNum(snapshot.baselineAvg, 0);
+        const avgAfter = safeNum(snapshot.projectedAvg, 0);
+        const tatDelta = avgAfter - avgBefore;
+        const totalSaving = safeNum(snapshot.tatSaved, 0);
+        const breachDelta = projectedSla - baselineSla;
+
+        return {
+            baseline_sla: baselineSla,
+            projected_sla: projectedSla,
+            avg_tat_before: Number(avgBefore.toFixed(1)),
+            avg_tat_after: Number(avgAfter.toFixed(1)),
+            tat_delta: Number(tatDelta.toFixed(1)),
+            total_saving_days: Number(totalSaving.toFixed(1)),
+            breach_delta: Number(breachDelta.toFixed(0))
+        };
+    }
+
+    function buildDeterministicSystemSummary(targetItems, result) {
+        const tatAbs = Math.abs(safeNum(result.tat_delta, 0));
+        const label = (targetItems || []).map(x => `${x.status} ${x.value}%`).join(', ') || '-';
+        return [
+            `Penurunan efisiensi ${label}:`,
+            `SLA breach: ${Number(result.baseline_sla).toLocaleString('id-ID')} -> ${Number(result.projected_sla).toLocaleString('id-ID')}`,
+            `Avg TAT turun ${tatAbs.toFixed(1)} hari/aplikasi`,
+            `Total penghematan ${Math.round(safeNum(result.total_saving_days, 0)).toLocaleString('id-ID')} hari proses`
+        ];
+    }
+
+    async function askAiForSimulationInsight(payload) {
+        const res = await fetch(AI_SIMULATION_INSIGHT_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.message || `AI simulation insight gagal (${res.status})`);
+        }
+        return data;
+    }
+
+    async function handleSimulationQuestion(question, intent, provider) {
+        if ((intent.intent || '') === 'simulate_missing_percentage') {
+            appendAIMessage('Mohon tentukan persentase efisiensi yang ingin disimulasikan (misal 10%, 15%, 20%).', 'bot');
+            return true;
+        }
+
+        if ((intent.intent || '') === 'simulate_missing_percentage_multi') {
+            appendAIMessage('Mohon tentukan persentase efisiensi untuk setiap status yang disebutkan (misal: Final Approval 10% dan Doc Submission 15%).', 'bot');
+            return true;
+        }
+
+        if ((intent.intent || '') !== 'simulate_efficiency' && (intent.intent || '') !== 'simulate_efficiency_multi') {
+            return false;
+        }
+
+        const requestedTargets = [];
+        if ((intent.intent || '') === 'simulate_efficiency_multi') {
+            (intent.items || []).forEach(item => {
+                requestedTargets.push({
+                    status: String(item && item.status || '').trim(),
+                    value: safeNum(item && item.value, 0),
+                    original_value: safeNum(item && item.original_value, item && item.value),
+                    was_clamped: !!(item && item.was_clamped)
+                });
+            });
+        } else {
+            requestedTargets.push({
+                status: String(intent.status || '').trim(),
+                value: safeNum(intent.value, 0),
+                original_value: safeNum(intent.meta && intent.meta.original_value, intent.value),
+                was_clamped: !!(intent.meta && intent.meta.was_clamped)
+            });
+        }
+
+        const resolvedTargets = [];
+        const unresolved = [];
+        requestedTargets.forEach(item => {
+            const matched = resolveSimulatorStatus(item.status);
+            if (!matched) {
+                unresolved.push(item.status);
+                return;
+            }
+            resolvedTargets.push({
+                status: matched,
+                canonical_status: item.status,
+                value: item.value,
+                original_value: item.original_value,
+                was_clamped: item.was_clamped
+            });
+        });
+
+        if (unresolved.length) {
+            appendAIMessage(`System error: status tidak ditemukan di simulator: ${unresolved.join(', ')}.`, 'err');
+            return true;
+        }
+
+        const clampedItems = resolvedTargets.filter(x => x.was_clamped);
+        if (clampedItems.length) {
+            const note = clampedItems.map(x => `${x.canonical_status} (${x.original_value}% -> ${x.value}%)`).join(', ');
+            appendAIMessage(`Persentase melebihi batas, disesuaikan: ${note}.`, 'bot');
+        }
+
+        setSimulatorMultipleStatuses(resolvedTargets.map(x => ({ status: x.status, value: x.value })));
+        recalcActionSimulator();
+        triggerSimulationRefreshAnimation();
+
+        const simulatorResult = buildSimulatorResultFromSnapshot(simLastSnapshot);
+        if (!simulatorResult) {
+            appendAIMessage('System error: hasil simulator tidak tersedia.', 'err');
+            return true;
+        }
+
+        const systemLines = buildDeterministicSystemSummary(
+            resolvedTargets.map(x => ({ status: x.canonical_status, value: x.value })),
+            simulatorResult
+        );
+        const systemHtml = `
+            <div class="ai-sim-block">
+                <div class="ai-sim-title">SYSTEM SUMMARY</div>
+                <div>${escapeHtml(systemLines.join('\n'))}</div>
+            </div>
+        `;
+
+        try {
+            const insight = await askAiForSimulationInsight({
+                question: question,
+                provider: provider,
+                targets: resolvedTargets.map(x => ({
+                    status: x.canonical_status,
+                    value: x.value,
+                    original_value: x.original_value,
+                    was_clamped: x.was_clamped
+                })),
+                status: resolvedTargets[0] ? resolvedTargets[0].canonical_status : '',
+                value: resolvedTargets[0] ? resolvedTargets[0].value : 0,
+                simulator_result: simulatorResult
+            });
+
+            const aiText = String(insight.ai_summary || '').trim() || 'Insight AI tidak tersedia.';
+            const aiHtml = `
+                ${systemHtml}
+                <div class="ai-sim-block mt-2">
+                    <div class="ai-sim-title">AI INSIGHT</div>
+                    <div>${escapeHtml(aiText)}</div>
+                </div>
+            `;
+            appendAIRichMessage(aiHtml, 'bot');
+        } catch (e) {
+            appendAIRichMessage(`
+                ${systemHtml}
+                <div class="ai-sim-block mt-2">
+                    <div class="ai-sim-title">AI INSIGHT</div>
+                    <div class="text-danger">System error: ${escapeHtml(String(e.message || e))}</div>
+                </div>
+            `, 'err');
+        }
+
+        return true;
+    }
+
     function getDashboardContextForAI() {
         const total = document.getElementById('kTotalApp')?.innerText || '-';
         const avgTat = document.getElementById('vAvg')?.innerText || '-';
@@ -255,6 +557,9 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         btn.disabled = true;
         btn.textContent = '...';
         try {
+            const intent = await detectChatIntent(question);
+            const simulated = await handleSimulationQuestion(question, intent, selectedChatProvider);
+            if (simulated) return;
             const ctx = getDashboardContextForAI();
             const answer = await askAIForChat(question, ctx, selectedChatProvider);
             appendAIMessage(answer, 'bot');
@@ -4280,13 +4585,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
-
-
-
-
 
 
 

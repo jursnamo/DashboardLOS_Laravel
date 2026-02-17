@@ -3,13 +3,25 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\DeterministicSimulationSummary;
+use App\Services\Ai\SimulationIntentDetector;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 class AiProxyController extends Controller
 {
+    public function detectIntent(Request $request, SimulationIntentDetector $detector): JsonResponse
+    {
+        $payload = $request->validate([
+            'question' => ['required', 'string', 'max:2000'],
+        ]);
+
+        return response()->json($detector->detect((string) $payload['question']));
+    }
+
     public function chat(Request $request): JsonResponse
     {
         $payload = $request->validate([
@@ -34,13 +46,190 @@ class AiProxyController extends Controller
             model: $provider === 'gemini'
                 ? config('services.gemini_ai.chat_model')
                 : config('services.cloudflare_ai.chat_model'),
-            maxTokens: 240,
+            maxTokens: 480,
             temperature: 0.2,
             useDecisionToken: false
         );
 
+        if ($this->looksTruncated($text)) {
+            $continuationPrompt = implode("\n", [
+                'Lanjutkan jawaban berikut agar selesai dan utuh.',
+                'Jangan mengulang dari awal.',
+                'Tulis lanjutan maksimal 3 kalimat dalam bahasa Indonesia profesional.',
+                '',
+                'Jawaban sebelumnya:',
+                $text,
+                '',
+                'Pertanyaan user:',
+                (string) $payload['question'],
+            ]);
+
+            $tail = $this->runAiByProvider(
+                provider: $provider,
+                prompt: $continuationPrompt,
+                systemPrompt: 'Anda asisten analis LOS dashboard. Lengkapi jawaban yang terputus dengan kalimat final yang utuh.',
+                model: $provider === 'gemini'
+                    ? config('services.gemini_ai.chat_model')
+                    : config('services.cloudflare_ai.chat_model'),
+                maxTokens: 140,
+                temperature: 0.2,
+                useDecisionToken: false
+            );
+
+            if (trim($tail) !== '') {
+                $text = rtrim($text)." ".ltrim($tail);
+            }
+        }
+
         return response()->json([
             'answer' => $text,
+        ]);
+    }
+
+    public function simulationInsight(
+        Request $request,
+        DeterministicSimulationSummary $summaryBuilder
+    ): JsonResponse {
+        $payload = $request->validate([
+            'question' => ['required', 'string', 'max:2000'],
+            'provider' => ['nullable', 'in:cloudflare,gemini'],
+            'status' => ['nullable', 'string', 'max:120'],
+            'value' => ['nullable', 'numeric', 'min:0', 'max:1000'],
+            'was_clamped' => ['nullable', 'boolean'],
+            'original_value' => ['nullable', 'numeric', 'min:0', 'max:1000'],
+            'targets' => ['nullable', 'array', 'min:1', 'max:6'],
+            'targets.*.status' => ['required_with:targets', 'string', 'max:120'],
+            'targets.*.value' => ['required_with:targets', 'numeric', 'min:0', 'max:1000'],
+            'targets.*.was_clamped' => ['nullable', 'boolean'],
+            'targets.*.original_value' => ['nullable', 'numeric', 'min:0', 'max:1000'],
+            'simulator_result' => ['required', 'array'],
+            'simulator_result.baseline_sla' => ['required', 'numeric'],
+            'simulator_result.projected_sla' => ['required', 'numeric'],
+            'simulator_result.avg_tat_before' => ['required', 'numeric'],
+            'simulator_result.avg_tat_after' => ['required', 'numeric'],
+            'simulator_result.tat_delta' => ['required', 'numeric'],
+            'simulator_result.total_saving_days' => ['required', 'numeric'],
+            'simulator_result.breach_delta' => ['required', 'numeric'],
+        ]);
+
+        $provider = $this->resolveProvider($payload['provider'] ?? null);
+        $targets = collect((array) ($payload['targets'] ?? []))
+            ->map(fn ($x) => [
+                'status' => trim((string) ($x['status'] ?? '')),
+                'value' => (int) round((float) ($x['value'] ?? 0)),
+                'original_value' => isset($x['original_value']) ? (int) round((float) $x['original_value']) : (int) round((float) ($x['value'] ?? 0)),
+                'was_clamped' => (bool) ($x['was_clamped'] ?? false),
+            ])
+            ->filter(fn ($x) => $x['status'] !== '')
+            ->values()
+            ->all();
+
+        if (empty($targets)) {
+            $singleStatus = trim((string) ($payload['status'] ?? ''));
+            if ($singleStatus === '' || !isset($payload['value'])) {
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Payload simulasi tidak valid: butuh status+value atau targets[].',
+                ], 422));
+            }
+            $singleValue = (int) round((float) ($payload['value'] ?? 0));
+            $targets[] = [
+                'status' => $singleStatus,
+                'value' => $singleValue,
+                'original_value' => isset($payload['original_value']) ? (int) round((float) $payload['original_value']) : $singleValue,
+                'was_clamped' => (bool) ($payload['was_clamped'] ?? false),
+            ];
+        }
+
+        $statusLabel = implode(', ', array_map(
+            fn ($x) => "{$x['status']} {$x['value']}%",
+            $targets
+        ));
+        if (mb_strlen($statusLabel) > 120) {
+            $statusLabel = mb_substr($statusLabel, 0, 120);
+        }
+
+        $requestedValue = (int) round(array_sum(array_map(fn ($x) => (int) ($x['original_value'] ?? 0), $targets)) / max(1, count($targets)));
+        $appliedValue = (int) round(array_sum(array_map(fn ($x) => (int) ($x['value'] ?? 0), $targets)) / max(1, count($targets)));
+        $hasClamped = count(array_filter($targets, fn ($x) => (bool) ($x['was_clamped'] ?? false))) > 0;
+        $sim = (array) ($payload['simulator_result'] ?? []);
+        $systemSummary = $summaryBuilder->generateCombined($targets, $sim);
+
+        $auditId = DB::table('simulation_audits')->insertGetId([
+            'question' => (string) $payload['question'],
+            'detected_status' => $statusLabel,
+            'requested_value' => $requestedValue,
+            'applied_value' => $appliedValue,
+            'was_clamped' => $hasClamped,
+            'provider' => $provider,
+            'simulator_payload' => json_encode([
+                'targets' => $targets,
+                'simulator_result' => $sim,
+            ], JSON_UNESCAPED_UNICODE),
+            'system_summary' => $systemSummary,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $targetLines = array_map(
+            fn ($x) => "- {$x['status']}: {$x['value']}%",
+            $targets
+        );
+
+        $prompt = implode("\n", [
+            'Anda analis proses kredit enterprise.',
+            '',
+            'Data hasil simulasi:',
+            'Target efisiensi:',
+            ...$targetLines,
+            'Baseline SLA: '.(string) ($sim['baseline_sla'] ?? 0),
+            'Projected SLA: '.(string) ($sim['projected_sla'] ?? 0),
+            'Avg TAT sebelum: '.(string) ($sim['avg_tat_before'] ?? 0),
+            'Avg TAT sesudah: '.(string) ($sim['avg_tat_after'] ?? 0),
+            'Total penghematan hari: '.(string) ($sim['total_saving_days'] ?? 0),
+            '',
+            'Tugas:',
+            'Buat ringkasan insight maksimal 4 kalimat.',
+            '- Gunakan minimal 2 angka dari data.',
+            '- Fokus pada interpretasi dampak.',
+            '- Jangan mengubah angka.',
+            '- Jangan menghitung ulang.',
+            '- Bahasa Indonesia profesional.',
+        ]);
+
+        try {
+            $aiSummary = $this->runAiByProvider(
+                provider: $provider,
+                prompt: $prompt,
+                systemPrompt: 'Anda analis proses kredit enterprise. Gunakan angka dari data apa adanya.',
+                model: $provider === 'gemini'
+                    ? config('services.gemini_ai.chat_model')
+                    : config('services.cloudflare_ai.chat_model'),
+                maxTokens: 220,
+                temperature: 0.2,
+                useDecisionToken: false
+            );
+        } catch (\Throwable $e) {
+            DB::table('simulation_audits')
+                ->where('id', $auditId)
+                ->update([
+                    'error_message' => $e->getMessage(),
+                    'updated_at' => now(),
+                ]);
+            throw $e;
+        }
+
+        DB::table('simulation_audits')
+            ->where('id', $auditId)
+            ->update([
+                'ai_summary' => $aiSummary,
+                'updated_at' => now(),
+            ]);
+
+        return response()->json([
+            'system_summary' => $systemSummary,
+            'ai_summary' => $aiSummary,
+            'simulator_result' => $sim,
+            'audit_id' => $auditId,
         ]);
     }
 
@@ -656,5 +845,20 @@ class AiProxyController extends Controller
         }
 
         return null;
+    }
+
+    private function looksTruncated(string $text): bool
+    {
+        $t = trim($text);
+        if ($t === '') {
+            return false;
+        }
+
+        if (preg_match('/[\\.!\\?…]$/u', $t)) {
+            return false;
+        }
+
+        return preg_match('/\\b(dengan|dan|atau|yang|untuk|karena|sehingga|maka|adalah|yaitu|bahwa|seperti)\\s*$/iu', $t) === 1
+            || mb_strlen($t) > 240;
     }
 }
