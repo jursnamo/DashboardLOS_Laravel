@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\DashboardApiCatalogService;
 use App\Services\Ai\DeterministicSimulationSummary;
 use App\Services\Ai\SimulationIntentDetector;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -22,7 +23,7 @@ class AiProxyController extends Controller
         return response()->json($detector->detect((string) $payload['question']));
     }
 
-    public function chat(Request $request): JsonResponse
+    public function chat(Request $request, DashboardApiCatalogService $catalogService): JsonResponse
     {
         $payload = $request->validate([
             'question' => ['required', 'string', 'max:2000'],
@@ -31,9 +32,13 @@ class AiProxyController extends Controller
         ]);
         $provider = $this->resolveProvider($payload['provider'] ?? null);
 
+        $catalogContext = $catalogService->buildContextForQuestion((string) $payload['question']);
         $prompt = implode("\n", [
             'Konteks Dashboard:',
             (string) ($payload['context'] ?? '-'),
+            '',
+            'Konteks API Dashboard (Datamart):',
+            $catalogContext,
             '',
             'Pertanyaan:',
             (string) $payload['question'],
@@ -83,6 +88,15 @@ class AiProxyController extends Controller
 
         return response()->json([
             'answer' => $text,
+        ]);
+    }
+
+    public function dashboardCatalog(DashboardApiCatalogService $catalogService): JsonResponse
+    {
+        $items = $catalogService->getCatalog();
+        return response()->json([
+            'count' => count($items),
+            'items' => $items,
         ]);
     }
 

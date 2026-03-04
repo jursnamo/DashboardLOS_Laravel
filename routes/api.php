@@ -12,7 +12,10 @@ Route::post('/dashboard/import', [DashboardApiController::class, 'import'])->nam
 Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class, 'importChunk'])->name('api.dashboard.import.chunk');
 Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
 Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
+Route::post('/dashboard/datamart/execute', [DashboardApiController::class, 'executeDatamart'])->name('api.dashboard.datamart.execute');
+Route::get('/dashboard/datamart/status/{batchId?}', [DashboardApiController::class, 'datamartStatus'])->name('api.dashboard.datamart.status');
 Route::post('/ai/chat', [AiProxyController::class, 'chat'])->name('api.ai.chat');
+Route::get('/ai/dashboard-catalog', [AiProxyController::class, 'dashboardCatalog'])->name('api.ai.dashboard_catalog');
 Route::post('/ai/detect-intent', [AiProxyController::class, 'detectIntent'])->name('api.ai.detect_intent');
 Route::post('/ai/simulation-insight', [AiProxyController::class, 'simulationInsight'])->name('api.ai.simulation_insight');
 Route::post('/ai/playbook', [AiProxyController::class, 'playbook'])->name('api.ai.playbook');

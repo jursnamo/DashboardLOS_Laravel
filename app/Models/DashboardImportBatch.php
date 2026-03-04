@@ -12,6 +12,7 @@ class DashboardImportBatch extends Model
 
     protected $fillable = [
         'filename',
+        'source_type',
         'calculation_mode',
         'status',
         'total_rows',

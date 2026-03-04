@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\BuildDashboardDatamartJob;
+use App\Models\DashboardDatamart;
 use App\Models\DashboardImportBatch;
 use App\Models\DashboardRecord;
 use Carbon\Carbon;
@@ -20,8 +22,24 @@ class DashboardApiController extends Controller
 
         DB::connection()->disableQueryLog();
 
+        $latestDatamart = DashboardDatamart::query()
+            ->where('status', 'completed')
+            ->latest('id')
+            ->first();
+
+        if ($latestDatamart) {
+            $payload = json_decode((string) $latestDatamart->payload_json, true);
+            if (is_array($payload) && ! empty($payload)) {
+                $payload['datamart_batch_id'] = $latestDatamart->batch_id;
+                $payload['datamart_source_batch_id'] = $latestDatamart->source_batch_id;
+                $payload['datamart_generated_at'] = optional($latestDatamart->created_at)->toIso8601String();
+                return response()->json($payload);
+            }
+        }
+
         $latestBatch = DashboardImportBatch::query()
             ->where('status', 'completed')
+            ->where('source_type', 'upload_file')
             ->latest('id')
             ->first();
 
@@ -233,6 +251,7 @@ class DashboardApiController extends Controller
 
         $batch = DashboardImportBatch::query()->create([
             'filename' => $payload['filename'] ?? 'manual-upload',
+            'source_type' => 'upload_file',
             'calculation_mode' => $payload['mode'],
             'status' => 'uploading',
             'total_rows' => (int) $payload['total_rows'],
@@ -400,6 +419,98 @@ class DashboardApiController extends Controller
             'error_message' => $batch->error_message,
             'started_at' => optional($batch->started_at)->toIso8601String(),
             'completed_at' => optional($batch->completed_at)->toIso8601String(),
+        ]);
+    }
+
+    public function executeDatamart(Request $request): JsonResponse
+    {
+        $payload = $request->validate([
+            'async' => ['nullable', 'boolean'],
+        ]);
+
+        $runAsync = (bool) ($payload['async'] ?? false);
+
+        $sourceBatch = DashboardImportBatch::query()
+            ->where('status', 'completed')
+            ->where('source_type', 'upload_file')
+            ->latest('id')
+            ->first();
+        if (! $sourceBatch) {
+            return response()->json([
+                'message' => 'No completed raw batch found to build datamart.',
+            ], 422);
+        }
+
+        $estimatedRows = (int) DB::table('dashboard_records')
+            ->where('batch_id', $sourceBatch->id)
+            ->count();
+
+        $batch = DashboardImportBatch::query()->create([
+            'filename' => 'raw-database-datamart',
+            'source_type' => 'raw_datamart',
+            'calculation_mode' => 'date',
+            'status' => $runAsync ? 'queued' : 'processing',
+            'total_rows' => max(1, (int) $estimatedRows),
+            'imported_rows' => 0,
+            'error_message' => null,
+            'started_at' => $runAsync ? null : now(),
+            'completed_at' => null,
+            'imported_at' => null,
+        ]);
+
+        if ($runAsync) {
+            BuildDashboardDatamartJob::dispatch($batch->id)->onQueue('imports');
+        } else {
+            BuildDashboardDatamartJob::dispatchSync($batch->id);
+            $batch->refresh();
+        }
+
+        return response()->json([
+            'message' => $runAsync ? 'Datamart job queued.' : 'Datamart job executed.',
+            'batch_id' => $batch->id,
+            'status' => $batch->status,
+            'total_rows' => (int) $batch->total_rows,
+            'imported_rows' => (int) $batch->imported_rows,
+            'run_async' => $runAsync,
+            'source_batch_id' => $sourceBatch->id,
+        ], $runAsync ? 202 : 200);
+    }
+
+    public function datamartStatus(?int $batchId = null): JsonResponse
+    {
+        $query = DashboardImportBatch::query()
+            ->where('source_type', 'raw_datamart');
+
+        $batch = $batchId
+            ? $query->where('id', $batchId)->first()
+            : $query->latest('id')->first();
+
+        if (! $batch) {
+            return response()->json([
+                'message' => 'Datamart batch not found.',
+            ], 404);
+        }
+
+        $latestDatamart = DashboardDatamart::query()
+            ->where('batch_id', $batch->id)
+            ->latest('id')
+            ->first();
+
+        return response()->json([
+            'batch_id' => $batch->id,
+            'status' => $batch->status,
+            'source_type' => $batch->source_type,
+            'total_rows' => (int) $batch->total_rows,
+            'imported_rows' => (int) $batch->imported_rows,
+            'progress_pct' => $batch->total_rows > 0
+                ? (int) floor(((int) $batch->imported_rows / (int) $batch->total_rows) * 100)
+                : 0,
+            'error_message' => $batch->error_message,
+            'started_at' => optional($batch->started_at)->toIso8601String(),
+            'completed_at' => optional($batch->completed_at)->toIso8601String(),
+            'imported_at' => optional($batch->imported_at)->toIso8601String(),
+            'source_batch_id' => $latestDatamart?->source_batch_id,
+            'datamart_records_count' => $latestDatamart?->records_count,
         ]);
     }
 

@@ -27,6 +27,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     const DASHBOARD_IMPORT_API = '/api/dashboard/import';
     const DASHBOARD_CONTENT_API = '/api/dashboard/content';
     const DASHBOARD_IMPORT_STATUS_API = '/api/dashboard/import';
+    const DASHBOARD_DATAMART_EXECUTE_API = '/api/dashboard/datamart/execute';
     const DASHBOARD_IMPORT_CHUNK_SIZE = 1200;
     let uploadedFileName = '';
     let isImportingToDb = false;
@@ -914,13 +915,17 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     function setSidebarMenuActive(menu) {
         const dashboardMenu = document.getElementById('menu-dashboard');
         const importMenu = document.getElementById('menu-import');
-        if (!dashboardMenu || !importMenu) return;
+        const datamartMenu = document.getElementById('menu-datamart');
+        if (!dashboardMenu || !importMenu || !datamartMenu) return;
 
         dashboardMenu.classList.remove('active');
         importMenu.classList.remove('active');
+        datamartMenu.classList.remove('active');
 
         if (menu === 'import') {
             importMenu.classList.add('active');
+        } else if (menu === 'datamart') {
+            datamartMenu.classList.add('active');
         } else {
             dashboardMenu.classList.add('active');
         }
@@ -1033,6 +1038,47 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     function openImportDataMenu() {
         setSidebarMenuActive('import');
         showStep('step1');
+    }
+
+    async function triggerDatamartJob() {
+        if (isImportingToDb || isDashboardLoading) return;
+
+        const confirmRun = window.confirm('Jalankan proses datamart dari raw database sekarang?');
+        if (!confirmRun) return;
+
+        setSidebarMenuActive('datamart');
+        isDashboardLoading = true;
+        setDashboardLoading(true, 'Menjalankan datamart job dari raw database...');
+
+        try {
+            const response = await fetch(DASHBOARD_DATAMART_EXECUTE_API, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ async: false })
+            });
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.message || 'Gagal menjalankan datamart job.');
+            }
+
+            if ((data.status || '') === 'failed') {
+                throw new Error(data.error_message || 'Datamart job gagal.');
+            }
+
+            setDashboardLoading(true, 'Datamart selesai. Reload dashboard...');
+            isDashboardLoading = false;
+            await openDashboardMenu();
+            alert(`Datamart selesai. ${Number(data.imported_rows || 0).toLocaleString()} baris siap dipakai dashboard.`);
+        } catch (err) {
+            alert(err.message || 'Terjadi kesalahan saat menjalankan datamart.');
+            emitDashboardReady();
+        } finally {
+            isDashboardLoading = false;
+        }
     }
 
     async function openDashboardMenu() {
@@ -1290,6 +1336,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
 
     window.openImportDataMenu = openImportDataMenu;
     window.openDashboardMenu = openDashboardMenu;
+    window.triggerDatamartJob = triggerDatamartJob;
     // ROBUST FILE READER
     document.getElementById('fileIn').addEventListener('change', e => {
         const f = e.target.files[0];
@@ -4585,9 +4632,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
 
 
 

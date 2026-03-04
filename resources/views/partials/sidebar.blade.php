@@ -46,6 +46,11 @@
                             <span class="nav-link-text">Import Data</span>
                         </a>
                     </li>
+                    <li id="menu-datamart">
+                        <a href="#" title="Execute Datamart Job" onclick="triggerDatamartJob(); return false;">
+                            <span class="nav-link-text">Execute Datamart Job</span>
+                        </a>
+                    </li>
                     <li class="{{ request()->is('los/applications*') ? 'active' : '' }}">
                         <a href="{{ route('los.applications.index') }}" title="Loan Origination">
                             <span class="nav-link-text">Loan Origination</span>

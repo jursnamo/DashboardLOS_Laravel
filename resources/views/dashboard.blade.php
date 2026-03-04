@@ -69,12 +69,14 @@
 }
 
 #menu-dashboard > a,
-#menu-import > a {
+#menu-import > a,
+#menu-datamart > a {
     transition: all .2s ease;
 }
 
 #menu-dashboard.active > a,
-#menu-import.active > a {
+#menu-import.active > a,
+#menu-datamart.active > a {
     color: #1ee0d5;
     font-weight: 600;
 }

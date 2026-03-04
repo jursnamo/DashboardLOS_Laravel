@@ -57,6 +57,7 @@
                     <ul class="app-list">
                         <li><a href="#" class="app-list-item" onclick="openDashboardMenu(); return false;"><span class="app-list-name">Dashboard</span></a></li>
                         <li><a href="#" class="app-list-item" onclick="openImportDataMenu(); return false;"><span class="app-list-name">Import Data</span></a></li>
+                        <li><a href="#" class="app-list-item" onclick="triggerDatamartJob(); return false;"><span class="app-list-name">Execute Datamart Job</span></a></li>
                     </ul>
                 </div>
             </div>
