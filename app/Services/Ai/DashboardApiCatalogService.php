@@ -493,6 +493,38 @@ class DashboardApiCatalogService
                 'top_branch_tat' => array_slice($topBranchTat, 0, 3),
                 'monthly_tat_last_6' => array_slice($monthlyTat, -6),
             ], ['default', 'ai', 'general']),
+            $this->item('api_61_monthly_avg_tat_jan_dec', 'Monthly Avg TAT Jan-Dec', 'Average TAT per bulan dalam format Jan-Des untuk pembacaan cepat.', array_map(function ($x) {
+                return [
+                    'month' => (string) ($x['month'] ?? ''),
+                    'avg_tat_days' => round((float) ($x['avg_tat'] ?? 0), 1),
+                ];
+            }, $monthlyTat), ['avg tat', 'monthly', 'jan', 'dec', 'bulan']),
+            $this->item('api_62_monthly_tat_with_volume', 'Monthly TAT with Volume', 'Kombinasi average TAT dan volume aplikasi per bulan.', array_map(function ($x) use ($monthlyVolume) {
+                $month = (string) ($x['month'] ?? '');
+                $vol = 0;
+                foreach ($monthlyVolume as $mv) {
+                    if ((string) ($mv['month'] ?? '') === $month) {
+                        $vol = (int) ($mv['count'] ?? 0);
+                        break;
+                    }
+                }
+                return [
+                    'month' => $month,
+                    'avg_tat_days' => round((float) ($x['avg_tat'] ?? 0), 1),
+                    'volume' => $vol,
+                ];
+            }, $monthlyTat), ['avg tat', 'monthly', 'volume', 'trend']),
+            $this->item('api_63_monthly_tat_rank', 'Monthly TAT Rank', 'Peringkat bulan dari TAT tertinggi ke terendah.', (function ($rows) {
+                $copied = array_values($rows);
+                usort($copied, fn ($a, $b) => ((float) ($b['avg_tat'] ?? 0) <=> (float) ($a['avg_tat'] ?? 0)));
+                return array_map(function ($x, $i) {
+                    return [
+                        'rank' => $i + 1,
+                        'month' => (string) ($x['month'] ?? ''),
+                        'avg_tat_days' => round((float) ($x['avg_tat'] ?? 0), 1),
+                    ];
+                }, $copied, array_keys($copied));
+            })($monthlyTat), ['avg tat', 'monthly', 'rank', 'highest']),
         ];
     }
 

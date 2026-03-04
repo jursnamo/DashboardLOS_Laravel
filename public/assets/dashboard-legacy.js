@@ -1783,10 +1783,12 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                 lim:0, 
                 cntPositiveLimit: 0,
                 limPositive: 0,
+                sumTat: 0,
                 apps: [],
                 display: d.displayMon || formatMonthDisplay(d.mon)
             };
             trendData[d.mon].cnt++; 
+            trendData[d.mon].sumTat += safeNum(d.tat, 0);
             trendData[d.mon].apps.push(d);
             
             // PERBAIKAN: Pisahkan perhitungan untuk limit positif
@@ -1884,6 +1886,10 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             const data = trendData[key];
             return data.cntPositiveLimit > 0 ? data.limPositive / data.cntPositiveLimit : 0;
         });
+        const trendAvgTatByMonth = sortedMonthKeys.map(key => {
+            const data = trendData[key];
+            return data.cnt > 0 ? (data.sumTat / data.cnt) : 0;
+        });
 
         // Trend Chart
         if(charts.trendMix) charts.trendMix.destroy();
@@ -1916,6 +1922,19 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                         order: 1,
                         pointBackgroundColor: '#10b981',
                         pointBorderColor: '#10b981',
+                        pointRadius: 4
+                    },
+                    {
+                        label: 'Avg TAT / Month',
+                        data: trendAvgTatByMonth,
+                        borderColor: '#7c3aed',
+                        backgroundColor: 'rgba(124, 58, 237, 0.08)',
+                        type: 'line',
+                        tension: 0.3,
+                        yAxisID: 'y2',
+                        order: 1,
+                        pointBackgroundColor: '#7c3aed',
+                        pointBorderColor: '#7c3aed',
                         pointRadius: 4
                     }
                 ]
@@ -1955,6 +1974,19 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                         grid: {
                             drawOnChartArea: false
                         }
+                    },
+                    y2: {
+                        display: true,
+                        position: 'right',
+                        offset: true,
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Avg TAT / Month (days)'
+                        },
+                        grid: {
+                            drawOnChartArea: false
+                        }
                     } 
                 },
                 plugins: {
@@ -1963,12 +1995,13 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                             label: function(context) {
                                 if(context.datasetIndex === 0) {
                                     return `Volume: ${context.parsed.y} applications`;
-                                } else {
+                                } else if (context.datasetIndex === 1) {
                                     const monthKey = sortedMonthKeys[context.dataIndex];
                                     const data = trendData[monthKey];
                                     const avgLimit = data.cntPositiveLimit > 0 ? data.limPositive / data.cntPositiveLimit : 0;
                                     return `Avg Limit (hanya >0): ${formatIDR(avgLimit)}`;
                                 }
+                                return `Avg TAT / Month: ${safeNum(context.parsed.y, 0).toFixed(1)} days`;
                             },
                             afterLabel: function(context) {
                                 const monthKey = sortedMonthKeys[context.dataIndex];
@@ -1978,7 +2011,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                                     return [
                                         `Applications with limit > 0: ${data.cntPositiveLimit}`,
                                         `Total Limit (hanya >0): ${formatIDR(data.limPositive)}`,
-                                        `Avg Limit (hanya >0): ${formatIDR(data.cntPositiveLimit > 0 ? data.limPositive / data.cntPositiveLimit : 0)}`
+                                        `Avg Limit (hanya >0): ${formatIDR(data.cntPositiveLimit > 0 ? data.limPositive / data.cntPositiveLimit : 0)}`,
+                                        `Avg TAT / Month: ${(data.cnt > 0 ? (data.sumTat / data.cnt) : 0).toFixed(1)} days`
                                     ].join('\n');
                                 }
                                 return '';
@@ -2009,8 +2043,11 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         // Update chart info
         const trendChartInfo = document.getElementById('trendChartInfo');
         const totalWithPositiveLimit = e2eData.filter(app => app.limit > 0).length;
+        const avgTatByMonthText = sortedMonthKeys
+            .map(key => `${trendData[key].display}: ${(trendData[key].cnt > 0 ? (trendData[key].sumTat / trendData[key].cnt) : 0).toFixed(1)}d`)
+            .join(' | ');
         trendChartInfo.innerHTML = 
-            `<span class="badge badge-success badge-pill"><i class="fal fa-info-circle me-1"></i>Average Limit is calculated only from ${totalWithPositiveLimit} applications with limit > 0 (${e2eData.length} total apps)</span>`;
+            `<span class="badge badge-success badge-pill"><i class="fal fa-info-circle me-1"></i>Average Limit is calculated only from ${totalWithPositiveLimit} applications with limit > 0 (${e2eData.length} total apps)</span><div class="mt-1">Avg TAT / Month: ${avgTatByMonthText}</div>`;
 
         // Branch Chart - Top 10 berdasarkan applications dengan limit positif
         const topBr = Object.entries(branchData)
@@ -4632,7 +4669,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
 
 
 
