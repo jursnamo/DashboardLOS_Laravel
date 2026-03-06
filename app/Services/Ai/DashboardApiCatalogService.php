@@ -136,6 +136,8 @@ class DashboardApiCatalogService
         arsort($purposeOutlier);
         arsort($segmentOutlier);
 
+        $waitingTransitions = $this->buildWaitingTransitions($flows);
+
         uasort($branchStats, fn ($a, $b) => ($b['count'] <=> $a['count']));
         arsort($purposeStats);
         arsort($segmentStats);
@@ -525,6 +527,7 @@ class DashboardApiCatalogService
                     ];
                 }, $copied, array_keys($copied));
             })($monthlyTat), ['avg tat', 'monthly', 'rank', 'highest']),
+            $this->item('api_64_top_waiting_bottleneck', 'Top Waiting Bottleneck (A->B)', 'Top transisi status dengan waiting time tertinggi.', array_slice($waitingTransitions, 0, 10), ['waiting', 'transition', 'status', 'bottleneck']),
         ];
     }
 
@@ -663,5 +666,117 @@ class DashboardApiCatalogService
         }
         usort($rows, fn ($a, $b) => $b['risk_score'] <=> $a['risk_score']);
         return array_slice($rows, 0, 10);
+    }
+
+    private function buildWaitingTransitions(array $flows): array
+    {
+        $agg = [];
+        foreach ($flows as $flow) {
+            $events = is_array($flow) && isset($flow['events']) && is_array($flow['events']) ? $flow['events'] : [];
+            if (count($events) < 2) {
+                continue;
+            }
+
+            usort($events, function ($a, $b) {
+                $aComplete = isset($a['completeMs']) && is_numeric($a['completeMs']) ? (int) $a['completeMs'] : null;
+                $bComplete = isset($b['completeMs']) && is_numeric($b['completeMs']) ? (int) $b['completeMs'] : null;
+                if ($aComplete !== null && $bComplete !== null) {
+                    return $aComplete <=> $bComplete;
+                }
+                if ($aComplete !== null) return -1;
+                if ($bComplete !== null) return 1;
+                $aStart = $this->eventStartMs($a);
+                $bStart = $this->eventStartMs($b);
+                if ($aStart !== null && $bStart !== null) {
+                    return $aStart <=> $bStart;
+                }
+                if ($aStart !== null) return -1;
+                if ($bStart !== null) return 1;
+                return ((int) ($a['seq'] ?? 0)) <=> ((int) ($b['seq'] ?? 0));
+            });
+
+            for ($i = 0; $i < count($events) - 1; $i++) {
+                $from = trim((string) ($events[$i]['status'] ?? ''));
+                $to = trim((string) ($events[$i + 1]['status'] ?? ''));
+                if ($from === '' || $to === '' || $from === $to) {
+                    continue;
+                }
+
+                $fromEnd = $this->eventEndMs($events[$i]);
+                $toStart = $this->eventStartMs($events[$i + 1]);
+                if ($fromEnd === null || $toStart === null) {
+                    continue;
+                }
+
+                $waitDays = max(0, ($toStart - $fromEnd) / 86400000);
+                $key = $from.' -> '.$to;
+                if (!isset($agg[$key])) {
+                    $agg[$key] = [
+                        'transition' => $key,
+                        'from_status' => $from,
+                        'to_status' => $to,
+                        'total_wait_days' => 0.0,
+                        'cases' => 0,
+                        'max_wait_days' => 0.0,
+                    ];
+                }
+                $agg[$key]['total_wait_days'] += $waitDays;
+                $agg[$key]['cases'] += 1;
+                if ($waitDays > $agg[$key]['max_wait_days']) {
+                    $agg[$key]['max_wait_days'] = $waitDays;
+                }
+            }
+        }
+
+        $rows = array_values(array_map(function ($x) {
+            $cases = max(1, (int) ($x['cases'] ?? 1));
+            return [
+                'transition' => (string) ($x['transition'] ?? ''),
+                'avg_wait_days' => round(((float) ($x['total_wait_days'] ?? 0)) / $cases, 2),
+                'total_wait_days' => round((float) ($x['total_wait_days'] ?? 0), 2),
+                'cases' => (int) ($x['cases'] ?? 0),
+                'max_wait_days' => round((float) ($x['max_wait_days'] ?? 0), 2),
+            ];
+        }, $agg));
+
+        usort($rows, function ($a, $b) {
+            if ($b['avg_wait_days'] !== $a['avg_wait_days']) {
+                return $b['avg_wait_days'] <=> $a['avg_wait_days'];
+            }
+            if ($b['total_wait_days'] !== $a['total_wait_days']) {
+                return $b['total_wait_days'] <=> $a['total_wait_days'];
+            }
+            return $b['cases'] <=> $a['cases'];
+        });
+
+        return $rows;
+    }
+
+    private function eventStartMs(array $event): ?int
+    {
+        if (isset($event['startMs']) && is_numeric($event['startMs'])) {
+            return (int) $event['startMs'];
+        }
+        if (isset($event['completeMs']) && is_numeric($event['completeMs'])) {
+            return (int) $event['completeMs'];
+        }
+        if (isset($event['endMs']) && is_numeric($event['endMs'])) {
+            return (int) $event['endMs'];
+        }
+        return null;
+    }
+
+    private function eventEndMs(array $event): ?int
+    {
+        if (isset($event['completeMs']) && is_numeric($event['completeMs'])) {
+            return (int) $event['completeMs'];
+        }
+        if (isset($event['endMs']) && is_numeric($event['endMs'])) {
+            return (int) $event['endMs'];
+        }
+        if (isset($event['startMs']) && is_numeric($event['startMs'])) {
+            return (int) $event['startMs'];
+        }
+        return null;
     }
 }

@@ -515,11 +515,16 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             .slice(0,3)
             .map(x => `${x.stat}: ${safeNum(x.avg,0).toFixed(1)} days`)
             .join(' | ') || '-';
+        const waitingRows = getTopWaitingTransitionsForAI(3);
+        const waitingText = waitingRows.length
+            ? waitingRows.map(x => `${x.transition}: avg ${safeNum(x.avg_wait_days, 0).toFixed(1)}d (${Math.round(safeNum(x.cases, 0)).toLocaleString()} cases)`).join(' | ')
+            : '-';
         return [
             `Total Applications: ${total}`,
             `Average TAT: ${avgTat}`,
             `Jumlah Outlier: ${outlier}`,
-            `Top Bottleneck: ${bottleneck}`
+            `Top Bottleneck: ${bottleneck}`,
+            `Top Waiting Transition A->B: ${waitingText}`
         ].join('\n');
     }
 
@@ -747,6 +752,23 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         });
     }
 
+    function getTopWaitingTransitionsForAI(limit = 10) {
+        const rows = buildWaitingTransitionRows();
+        return rows.slice(0, Math.max(1, Number(limit) || 10)).map(function (r) {
+            return {
+                transition: String(r.transition || ''),
+                from_status: String(r.from_status || ''),
+                to_status: String(r.to_status || ''),
+                avg_wait_days: Number(safeNum(r.avg_wait_days, 0).toFixed(2)),
+                total_wait_days: Number(safeNum(r.total_wait_days, 0).toFixed(2)),
+                cases: Number(Math.round(safeNum(r.cases, 0))),
+                max_wait_days: Number(safeNum(r.max_wait_days, 0).toFixed(2))
+            };
+        }).filter(function (r) {
+            return r.transition !== '';
+        });
+    }
+
     async function requestDecisionPlaybookAI(playbookRows, totalApp, statusMetrics, provider) {
         const now = Date.now();
         if (decisionPlaybookAiRetryAt && now < decisionPlaybookAiRetryAt) {
@@ -780,13 +802,22 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
 
         const loanSummary = getLoanSummaryForAI();
         const bottleneckByStatus = buildBottleneckByStatusForAI(playbookRows);
+        const waitingTransitions = getTopWaitingTransitionsForAI(10);
+        const waitingSummary = {
+            transitions: waitingTransitions.length,
+            total_cases: waitingTransitions.reduce((sum, r) => sum + safeNum(r.cases, 0), 0),
+            total_wait_days: Number(waitingTransitions.reduce((sum, r) => sum + safeNum(r.total_wait_days, 0), 0).toFixed(2)),
+            top10_share_pct: 100
+        };
         const cacheKey = JSON.stringify({
             provider: provider || '',
             total_app: totalApp || 0,
             rows: compact,
             outlier_rows: outlierCompact,
             loan_summary: loanSummary,
-            bottleneck_by_status: bottleneckByStatus
+            bottleneck_by_status: bottleneckByStatus,
+            waiting_summary: waitingSummary,
+            waiting_transitions: waitingTransitions
         });
         if (decisionPlaybookCache.has(cacheKey)) {
             return decisionPlaybookCache.get(cacheKey);
@@ -804,7 +835,9 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                 rows: compact,
                 outlier_rows: outlierCompact,
                 loan_summary: loanSummary,
-                bottleneck_by_status: bottleneckByStatus
+                bottleneck_by_status: bottleneckByStatus,
+                waiting_summary: waitingSummary,
+                waiting_transitions: waitingTransitions
             })
         });
 
@@ -813,7 +846,12 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             if (res.status === 429 || res.status === 503) {
                 decisionPlaybookAiRetryAt = Date.now() + 30000;
             }
-            throw new Error(data.message || `Decision AI gagal (${res.status})`);
+            const providerMsg =
+                (data && data.error && data.error.error && data.error.error.message)
+                || (data && data.error && data.error.message)
+                || '';
+            const errorText = providerMsg || data.message || `Decision AI gagal (${res.status})`;
+            throw new Error(errorText);
         }
 
         const normalized = Array.isArray(data.actions) ? data.actions.slice(0, 3).map(function (x) {
@@ -848,9 +886,16 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                 if (requestId !== decisionPlaybookReqSeq) return;
                 renderDecisionPlaybookItems(recoEl, topImpact3, aiActions);
             })
-            .catch(function (_) {
+            .catch(function (err) {
                 if (requestId !== decisionPlaybookReqSeq) return;
                 renderDecisionPlaybookItems(recoEl, topImpact3, fallback);
+                const msg = String((err && err.message) || '').trim();
+                if (msg) {
+                    recoEl.insertAdjacentHTML(
+                        'afterbegin',
+                        `<div class="small text-danger mb-2">Gemini fallback: ${escapeHtml(msg)}</div>`
+                    );
+                }
             });
     }
 
@@ -905,6 +950,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         setStaticSelectOption('mBranch', 'branch_name');
         setStaticSelectOption('mMonth', 'booking_month');
         setStaticSelectOption('mStart', 'start_date');
+        setStaticSelectOption('mStartTat', 'start_date');
         setStaticSelectOption('mEnd', 'end_date');
         setStaticSelectOption('mComplete', 'complete_date');
         setStaticSelectOption('mTat', 'tat_days');
@@ -1386,6 +1432,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         auto('mBranch', ['branch', 'cabang']);
         auto('mMonth', ['booking month', 'month']);
         auto('mStart', ['create_date', 'start']);
+        auto('mStartTat', ['create_date', 'start']);
         auto('mEnd', ['completed_date', 'end']);
         auto('mComplete', ['completed_date', 'complete date', 'end']);
         auto('mTat', ['tat', 'sla']);
@@ -1422,6 +1469,9 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     }
 
     async function processData() {
+        const startMapped = mode === 'tat'
+            ? (document.getElementById('mStartTat')?.value || document.getElementById('mStart')?.value || '')
+            : (document.getElementById('mStart')?.value || document.getElementById('mStartTat')?.value || '');
         const m = {
             id: document.getElementById('mId').value,
             seg: document.getElementById('mSeg').value,
@@ -1430,13 +1480,14 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             branch: document.getElementById('mBranch').value,
             mon: document.getElementById('mMonth').value,
             c: document.getElementById('mComplete').value,
-            s: document.getElementById('mStart').value,
+            s: startMapped,
             e: document.getElementById('mEnd').value,
             t: document.getElementById('mTat').value,
             stat: document.getElementById('mStat').value
         };
 
         if(!m.id || !m.stat) { alert("Application ID and Status are required!"); return; }
+        if(!m.s || !m.c) { alert("Start Date dan Complete Date wajib dipilih untuk perhitungan waiting time."); return; }
         if(!raw.length) { alert("Tidak ada data untuk diimport."); return; }
         if(isImportingToDb) { return; }
 
@@ -2293,6 +2344,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         }));
         createTopBottleneckChart(slow, totalStatusTatAll);
         renderAvgStepPerStatusChart();
+        renderWaitingBottleneckBoard();
         renderManagementActionBoard(stMetrics);
         if (!skipSimInit) {
             initActionSimulator(stMetrics);
@@ -2912,88 +2964,127 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         if (!flowObj || !flowObj.events || !flowObj.events.length) return [];
         const events = [...flowObj.events];
         events.sort((a, b) => {
-            if (a.startMs !== null && b.startMs !== null) return a.startMs - b.startMs;
-            if (a.startMs !== null) return -1;
-            if (b.startMs !== null) return 1;
+            const aComplete = Number.isFinite(Number(a.completeMs)) ? Number(a.completeMs) : null;
+            const bComplete = Number.isFinite(Number(b.completeMs)) ? Number(b.completeMs) : null;
+            if (aComplete !== null && bComplete !== null) return aComplete - bComplete;
+            if (aComplete !== null) return -1;
+            if (bComplete !== null) return 1;
+            const aStart = Number.isFinite(Number(a.startMs)) ? Number(a.startMs) : null;
+            const bStart = Number.isFinite(Number(b.startMs)) ? Number(b.startMs) : null;
+            if (aStart !== null && bStart !== null) return aStart - bStart;
+            if (aStart !== null) return -1;
+            if (bStart !== null) return 1;
             return a.seq - b.seq;
         });
         return events;
     }
 
+    function getEventStartMs(ev) {
+        if (!ev) return null;
+        if (Number.isFinite(ev.startMs)) return Number(ev.startMs);
+        if (Number.isFinite(ev.completeMs)) return Number(ev.completeMs);
+        if (Number.isFinite(ev.endMs)) return Number(ev.endMs);
+        return null;
+    }
+
+    function getEventEndMs(ev) {
+        if (!ev) return null;
+        if (Number.isFinite(ev.completeMs)) return Number(ev.completeMs);
+        if (Number.isFinite(ev.endMs)) return Number(ev.endMs);
+        if (Number.isFinite(ev.startMs)) return Number(ev.startMs);
+        return null;
+    }
+
+    function buildWaitingTransitionRows() {
+        const agg = {};
+
+        Object.values(appFlowEvents || {}).forEach(flow => {
+            const events = getOrderedFlowEvents(flow);
+            if (!events || events.length < 2) return;
+
+            for (let i = 0; i < events.length - 1; i++) {
+                const fromEv = events[i];
+                const toEv = events[i + 1];
+                const fromStatus = String(fromEv.status || 'Unknown').trim() || 'Unknown';
+                const toStatus = String(toEv.status || 'Unknown').trim() || 'Unknown';
+                if (!fromStatus || !toStatus) continue;
+                if (fromStatus === toStatus) continue;
+
+                const fromEnd = getEventEndMs(fromEv);
+                const toStart = getEventStartMs(toEv);
+                if (!Number.isFinite(fromEnd) || !Number.isFinite(toStart)) continue;
+
+                const waitDays = Math.max(0, (toStart - fromEnd) / 86400000);
+                const key = `${fromStatus} -> ${toStatus}`;
+                if (!agg[key]) {
+                    agg[key] = {
+                        transition: key,
+                        from_status: fromStatus,
+                        to_status: toStatus,
+                        total_wait_days: 0,
+                        cases: 0,
+                        max_wait_days: 0
+                    };
+                }
+                agg[key].total_wait_days += waitDays;
+                agg[key].cases += 1;
+                if (waitDays > agg[key].max_wait_days) {
+                    agg[key].max_wait_days = waitDays;
+                }
+            }
+        });
+
+        return Object.values(agg)
+            .map(x => ({
+                ...x,
+                avg_wait_days: x.cases > 0 ? (x.total_wait_days / x.cases) : 0
+            }))
+            .sort((a, b) => b.avg_wait_days - a.avg_wait_days || b.total_wait_days - a.total_wait_days || b.cases - a.cases);
+    }
+
+    function renderWaitingBottleneckBoard() {
+        const tbody = document.getElementById('waitingBottleneckTable');
+        const summary = document.getElementById('waitingBottleneckSummary');
+        if (!tbody || !summary) return;
+
+        const rows = buildWaitingTransitionRows();
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No waiting transition data.</td></tr>';
+            summary.textContent = 'No data';
+            return;
+        }
+
+        const topRows = rows.slice(0, 10);
+        const totalCases = rows.reduce((sum, r) => sum + safeNum(r.cases, 0), 0);
+        const totalWait = rows.reduce((sum, r) => sum + safeNum(r.total_wait_days, 0), 0);
+        const topShare = totalWait > 0
+            ? (topRows.reduce((sum, r) => sum + safeNum(r.total_wait_days, 0), 0) / totalWait) * 100
+            : 0;
+
+        summary.textContent = `Transitions: ${rows.length} | Cases: ${Math.round(totalCases).toLocaleString()} | Top10 Share: ${topShare.toFixed(1)}%`;
+
+        tbody.innerHTML = topRows.map((r, idx) => `
+            <tr>
+                <td>${idx + 1}</td>
+                <td>${escapeHtml(r.transition)}</td>
+                <td class="text-end fw-bold">${safeNum(r.avg_wait_days, 0).toFixed(1)}</td>
+                <td class="text-end">${safeNum(r.total_wait_days, 0).toFixed(1)}</td>
+                <td class="text-end">${Math.round(safeNum(r.cases, 0)).toLocaleString()}</td>
+                <td class="text-end">${safeNum(r.max_wait_days, 0).toFixed(1)}</td>
+            </tr>
+        `).join('');
+    }
+
     function aggregateFlowEventsByStatusAndCompleteDate(events) {
         if (!events || !events.length) return [];
-        const order = [];
-        const grouped = {};
-        events.forEach(ev => {
-            const status = String(ev.status || 'Unknown').trim() || 'Unknown';
-            const dateKey = (ev.completeKey && String(ev.completeKey).trim()) || null;
-            if (!dateKey) {
-                order.push({
-                    status,
-                    completeMs: null,
-                    duration: safeNum(ev.duration, 0),
-                    count: 1,
-                    seq: ev.seq
-                });
-                return;
-            }
-            const key = `${status}##${dateKey}`;
-            if (!grouped[key]) {
-                grouped[key] = {
-                    status,
-                    completeMs: ev.completeMs,
-                    completeKey: dateKey,
-                    duration: 0,
-                    count: 0,
-                    seq: ev.seq
-                };
-                order.push(grouped[key]);
-            }
-            grouped[key].duration += safeNum(ev.duration, 0);
-            grouped[key].count += 1;
-            if (ev.seq < grouped[key].seq) grouped[key].seq = ev.seq;
-            if (Number.isFinite(ev.completeMs) && (!Number.isFinite(grouped[key].completeMs) || ev.completeMs < grouped[key].completeMs)) {
-                grouped[key].completeMs = ev.completeMs;
-            }
-        });
-        const sorted = order.sort((a, b) => {
-            if (a.completeMs !== null && b.completeMs !== null) return a.completeMs - b.completeMs;
-            if (a.completeMs !== null) return -1;
-            if (b.completeMs !== null) return 1;
-            return a.seq - b.seq;
-        });
-        const merged = [];
-        sorted.forEach(ev => {
-            const curr = {
-                status: ev.status || 'Unknown',
-                statusList: [ev.status || 'Unknown'],
-                completeMs: ev.completeMs,
-                duration: safeNum(ev.duration, 0),
-                count: safeNum(ev.count, 1),
-                seq: ev.seq
-            };
-            if (!merged.length) {
-                merged.push(curr);
-                return;
-            }
-            const prev = merged[merged.length - 1];
-            const gapDays = getGapDays(prev.completeMs, curr.completeMs);
-            if (gapDays === 0) {
-                prev.duration += curr.duration;
-                prev.count += curr.count;
-                if (Number.isFinite(curr.completeMs) && (!Number.isFinite(prev.completeMs) || curr.completeMs > prev.completeMs)) {
-                    prev.completeMs = curr.completeMs;
-                }
-                if (curr.seq < prev.seq) prev.seq = curr.seq;
-                curr.statusList.forEach(st => {
-                    if (!prev.statusList.includes(st)) prev.statusList.push(st);
-                });
-                prev.status = prev.statusList.join(' + ');
-                return;
-            }
-            merged.push(curr);
-        });
-        return merged;
+        return events.map(ev => ({
+            status: String(ev.status || 'Unknown').trim() || 'Unknown',
+            startMs: Number.isFinite(Number(ev.startMs)) ? Number(ev.startMs) : null,
+            completeMs: Number.isFinite(Number(ev.completeMs)) ? Number(ev.completeMs) : null,
+            duration: safeNum(ev.duration, 0),
+            count: 1,
+            seq: Number.isFinite(Number(ev.seq)) ? Number(ev.seq) : 0
+        }));
     }
 
     function bucketLabelForBottleneckLoan(limitValue) {
@@ -3190,7 +3281,17 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
         const diff = (toMs - fromMs) / 86400000;
         if (!Number.isFinite(diff) || diff < 0) return 0;
-        return Math.round(diff);
+        return Math.round(diff * 10) / 10;
+    }
+
+    function getWaitingDaysBetweenEvents(fromEvent, toEvent) {
+        if (!fromEvent || !toEvent) return null;
+        const fromEnd = getEventEndMs(fromEvent);
+        const toStart = getEventStartMs(toEvent);
+        if (!Number.isFinite(fromEnd) || !Number.isFinite(toStart)) return null;
+        const diff = (toStart - fromEnd) / 86400000;
+        if (!Number.isFinite(diff) || diff < 0) return 0;
+        return diff;
     }
 
     function renderManagementActionBoard(stMetrics) {
@@ -3967,7 +4068,8 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
                 `);
                 if (idx < flowEvents.length - 1) {
                     const next = flowEvents[idx + 1];
-                    const gapDays = getGapDays(ev.completeMs, next.completeMs);
+                    const waitingDays = getWaitingDaysBetweenEvents(ev, next);
+                    const gapDays = waitingDays === null ? null : (Math.round(waitingDays * 10) / 10);
                     if (gapDays !== null) {
                         const gapClass = gapDays > 10 ? 'danger' : (gapDays > 5 ? 'warn' : '');
                         timelineHtml.push(`
@@ -4669,15 +4771,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
-
-
-
-
-
-
 
 
 

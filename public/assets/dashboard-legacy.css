@@ -23,6 +23,8 @@
 
         /* COMPONENTS */
         .section-title { font-size: 0.95rem; font-weight: 800; color: #1e293b; margin: 25px 0 15px 0; padding-left: 10px; border-left: 4px solid var(--accent); }
+        #step3 .section-title { margin: 34px 0 16px 0; }
+        #step3 .section-title:first-of-type { margin-top: 18px; }
         
         .kpi-card { background: white; padding: 15px 10px; border-radius: 10px; border: 1px solid #e2e8f0; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; box-shadow: 0 2px 5px rgba(0,0,0,0.02); transition: transform 0.2s; cursor: pointer; }
         .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
@@ -31,6 +33,13 @@
         .kpi-sub { font-size: 0.65rem; color: #94a3b8; }
 
         .chart-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 15px; height: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.01); }
+        #step3 .chart-card { margin-bottom: 6px; }
+        #step3 .row.g-4 > [class*="col-"],
+        #step3 .row.g-3 > [class*="col-"],
+        #step3 .row.g-2 > [class*="col-"] { margin-bottom: 14px; }
+        #step3 .row.g-4,
+        #step3 .row.g-3,
+        #step3 .row.g-2 { margin-bottom: 6px; }
         .chart-head { font-weight: 700; color: #334155; margin-bottom: 15px; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
         .chart-card, .chart-card * {
             user-select: none;

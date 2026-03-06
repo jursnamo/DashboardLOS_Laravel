@@ -117,9 +117,10 @@ class DashboardApiController extends Controller
 
         $flowEventRows = DB::table('dashboard_records')
             ->where('batch_id', $latestBatch->id)
-            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(complete_date) as complete_key,\n                MIN(UNIX_TIMESTAMP(start_date) * 1000) as start_ms,\n                MAX(UNIX_TIMESTAMP(end_date) * 1000) as end_ms,\n                MIN(UNIX_TIMESTAMP(complete_date) * 1000) as complete_ms,\n                SUM({$durationExpr}) as duration_sum,\n                MIN(row_order) as seq\n            ")
-            ->groupBy('app_id', 'status_flow', DB::raw('DATE(complete_date)'))
-            ->orderBy('seq')
+            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(complete_date) as complete_key,\n                UNIX_TIMESTAMP(start_date) * 1000 as start_ms,\n                UNIX_TIMESTAMP(end_date) * 1000 as end_ms,\n                UNIX_TIMESTAMP(complete_date) * 1000 as complete_ms,\n                {$durationExpr} as duration_sum,\n                row_order as seq\n            ")
+            ->orderBy('app_id')
+            ->orderByRaw('COALESCE(complete_date, start_date, end_date)')
+            ->orderBy('row_order')
             ->get();
 
         $appFlowEvents = [];
@@ -239,8 +240,8 @@ class DashboardApiController extends Controller
             'mapping.limit' => ['nullable', 'string'],
             'mapping.branch' => ['nullable', 'string'],
             'mapping.mon' => ['nullable', 'string'],
-            'mapping.c' => ['nullable', 'string'],
-            'mapping.s' => ['nullable', 'string'],
+            'mapping.c' => ['required', 'string'],
+            'mapping.s' => ['required', 'string'],
             'mapping.e' => ['nullable', 'string'],
             'mapping.t' => ['nullable', 'string'],
             'mapping.stat' => ['required', 'string'],

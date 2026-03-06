@@ -1,6 +1,6 @@
-# AI Dashboard API Catalog (63 Items)
+# AI Dashboard API Catalog (64 Items)
 
-Dokumen ini menjelaskan 63 API context list yang dipakai AI Chat untuk menjawab pertanyaan berbasis datamart dashboard.
+Dokumen ini menjelaskan 64 API context list yang dipakai AI Chat untuk menjawab pertanyaan berbasis datamart dashboard.
 
 Lokasi implementasi:
 - `app/Services/Ai/DashboardApiCatalogService.php`
@@ -80,6 +80,7 @@ Format setiap item:
 | 61 | `api_61_monthly_avg_tat_jan_dec` | Monthly Avg TAT Jan-Dec | Avg TAT per bulan Jan-Des | "Avg TAT Jan sampai Dec berapa?" |
 | 62 | `api_62_monthly_tat_with_volume` | Monthly TAT with Volume | Avg TAT + volume per bulan | "TAT bulanan beserta volumenya?" |
 | 63 | `api_63_monthly_tat_rank` | Monthly TAT Rank | Ranking bulan berdasarkan Avg TAT | "Bulan dengan TAT tertinggi apa?" |
+| 64 | `api_64_top_waiting_bottleneck` | Top Waiting Bottleneck (A->B) | Top 10 waiting time antar transisi status | "Transisi status mana waiting time tertinggi?" |
 
 ## Cara Cek Data Katalog
 
@@ -93,7 +94,7 @@ Contoh response ringkas:
 
 ```json
 {
-  "count": 63,
+  "count": 64,
   "items": [
     {
       "id": "api_01_overview",

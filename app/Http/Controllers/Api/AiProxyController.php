@@ -247,10 +247,11 @@ class AiProxyController extends Controller
         ]);
     }
 
-    public function playbook(Request $request): JsonResponse
+    public function playbook(Request $request, DashboardApiCatalogService $catalogService): JsonResponse
     {
         $payload = $request->validate([
             'provider' => ['nullable', 'in:cloudflare,gemini'],
+            'playbook_mode' => ['nullable', 'in:legacy,strict,executive'],
             'total_app' => ['nullable', 'integer', 'min:0'],
             'rows' => ['required', 'array', 'min:1', 'max:5'],
             'rows.*.status' => ['required', 'string', 'max:120'],
@@ -291,8 +292,25 @@ class AiProxyController extends Controller
             'bottleneck_by_status.*.rows.*.avg_status_tat' => ['nullable', 'numeric', 'min:0'],
             'bottleneck_by_status.*.rows.*.sla_breach_count' => ['nullable', 'integer', 'min:0'],
             'bottleneck_by_status.*.rows.*.sla_breach_pct' => ['nullable', 'numeric', 'min:0'],
+            'waiting_summary' => ['nullable', 'array'],
+            'waiting_summary.transitions' => ['nullable', 'integer', 'min:0'],
+            'waiting_summary.total_cases' => ['nullable', 'integer', 'min:0'],
+            'waiting_summary.total_wait_days' => ['nullable', 'numeric', 'min:0'],
+            'waiting_summary.top10_share_pct' => ['nullable', 'numeric', 'min:0'],
+            'waiting_transitions' => ['nullable', 'array', 'max:20'],
+            'waiting_transitions.*.transition' => ['required_with:waiting_transitions', 'string', 'max:255'],
+            'waiting_transitions.*.from_status' => ['nullable', 'string', 'max:120'],
+            'waiting_transitions.*.to_status' => ['nullable', 'string', 'max:120'],
+            'waiting_transitions.*.avg_wait_days' => ['nullable', 'numeric', 'min:0'],
+            'waiting_transitions.*.total_wait_days' => ['nullable', 'numeric', 'min:0'],
+            'waiting_transitions.*.cases' => ['nullable', 'integer', 'min:0'],
+            'waiting_transitions.*.max_wait_days' => ['nullable', 'numeric', 'min:0'],
         ]);
         $provider = $this->resolveProvider($payload['provider'] ?? null);
+        $playbookMode = strtolower(trim((string) ($payload['playbook_mode'] ?? 'legacy')));
+        if (!in_array($playbookMode, ['legacy', 'strict', 'executive'], true)) {
+            $playbookMode = 'legacy';
+        }
 
         $rows = collect($payload['rows'])
             ->take(5)
@@ -347,6 +365,37 @@ class AiProxyController extends Controller
             ->values()
             ->all();
 
+        $catalogQuestion = implode(' ', array_map(
+            fn ($x) => (string) ($x['status'] ?? ''),
+            $statusProfiles
+        ));
+        $catalogContext = $catalogService->buildContextForQuestion(
+            question: trim('decision playbook '.$catalogQuestion),
+            maxItems: 14
+        );
+
+        if ($playbookMode === 'strict') {
+            return response()->json(
+                $this->buildStrictPlaybookResponse(
+                    payload: $payload,
+                    provider: $provider,
+                    statusProfiles: $statusProfiles,
+                    catalogContext: $catalogContext
+                )
+            );
+        }
+
+        if ($playbookMode === 'executive') {
+            return response()->json(
+                $this->buildExecutivePlaybookResponse(
+                    payload: $payload,
+                    provider: $provider,
+                    statusProfiles: $statusProfiles,
+                    catalogContext: $catalogContext
+                )
+            );
+        }
+
         $prompt = implode("\n", [
             'Anda analis proses kredit enterprise.',
             'Analisis wajib berbasis data per status (bukan template umum).',
@@ -365,12 +414,14 @@ class AiProxyController extends Controller
             '- sla_target_impact harus berupa target terukur, contoh: "SLA breach -10% dalam 2 bulan"',
             '- reason jelaskan pemicu utama (tat/step/outlier/impact)',
             '- action harus fokus ke penurunan SLA breach/TAT',
-            '- gunakan juga loan_summary dan bottleneck_by_status (loan size, loop, avg tat, avg status tat, SLA breach)',
+            '- gunakan juga loan_summary, bottleneck_by_status, dan waiting_transitions (A->B wait days)',
             '',
             'Total app: '.((int) ($payload['total_app'] ?? 0)),
             'Loan summary: '.json_encode($payload['loan_summary'] ?? [], JSON_UNESCAPED_UNICODE),
             'Status profiles (top 3): '.json_encode($statusProfiles, JSON_UNESCAPED_UNICODE),
             'Bottleneck detail by status: '.json_encode($payload['bottleneck_by_status'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Waiting summary: '.json_encode($payload['waiting_summary'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Waiting transitions (top): '.json_encode($payload['waiting_transitions'] ?? [], JSON_UNESCAPED_UNICODE),
         ]);
 
         $text = $this->runAiByProvider(
@@ -399,7 +450,392 @@ class AiProxyController extends Controller
             'actions' => $alignedActions,
             'raw' => $text,
             'provider' => $provider,
+            'playbook_mode' => 'legacy',
         ]);
+    }
+
+    private function buildStrictPlaybookResponse(
+        array $payload,
+        string $provider,
+        array $statusProfiles,
+        string $catalogContext
+    ): array {
+        $prompt = implode("\n", [
+            'Buat Decision Playbook berbasis data API context.',
+            'Tujuan: turunkan SLA breach dan Avg TAT.',
+            'Output HANYA JSON object valid.',
+            '',
+            'Schema output wajib:',
+            '{"summary":{"overall_condition":"...","top_risk":"...","momentum_mom":"...","data_freshness":"..."},"playbook":[{"rank":1,"focus_area":"...","priority":"High","evidence":["..."],"root_cause":"...","action_30d":"...","action_90d":"...","target_sla_tat":"...","expected_impact":"...","owner":"...","risk_if_no_action":"..."}],"watchlist":[{"item":"...","reason":"...","trigger_threshold":"..."}]}',
+            'Batasan:',
+            '- playbook tepat 5 item',
+            '- watchlist tepat 3 item',
+            '- evidence minimal 3 angka/item',
+            '- gunakan data apa adanya, jangan ubah angka',
+            '',
+            'Input management rows: '.json_encode($payload['rows'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input outlier rows: '.json_encode($payload['outlier_rows'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input loan summary: '.json_encode($payload['loan_summary'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input bottleneck by status: '.json_encode($payload['bottleneck_by_status'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input waiting summary: '.json_encode($payload['waiting_summary'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input waiting transitions: '.json_encode($payload['waiting_transitions'] ?? [], JSON_UNESCAPED_UNICODE),
+            '',
+            'API context: ',
+            $catalogContext,
+        ]);
+
+        $raw = $this->runAiByProvider(
+            provider: $provider,
+            prompt: $prompt,
+            systemPrompt: 'Anda analis kinerja LOS level manajemen. Hanya keluarkan JSON valid dan data-driven.',
+            model: $provider === 'gemini'
+                ? config('services.gemini_ai.playbook_model')
+                : config('services.cloudflare_ai.playbook_model'),
+            maxTokens: 820,
+            temperature: 0.2,
+            useDecisionToken: true
+        );
+
+        $parsed = $this->parseStrictPlaybookJson($raw);
+        $normalized = $this->normalizeStrictPlaybook($parsed, $statusProfiles, (array) ($payload['loan_summary'] ?? []));
+
+        return [
+            'provider' => $provider,
+            'playbook_mode' => 'strict',
+            'result' => $normalized,
+            'raw' => $raw,
+        ];
+    }
+
+    private function buildExecutivePlaybookResponse(
+        array $payload,
+        string $provider,
+        array $statusProfiles,
+        string $catalogContext
+    ): array {
+        $prompt = implode("\n", [
+            'Susun Executive Decision Playbook yang mudah dibaca manajemen.',
+            'Output HANYA JSON object valid.',
+            '',
+            'Schema output wajib:',
+            '{"headline":{"condition":"...","key_message":"..."},"top_priorities":[{"title":"...","why_now":"...","evidence_numbers":["..."],"action_now_30d":"...","stabilization_90d":"...","target":"...","business_impact":"..."}],"management_watchouts":["...","...","..."],"data_note":"..."}',
+            'Batasan:',
+            '- top_priorities tepat 3 item',
+            '- management_watchouts tepat 3 item',
+            '- tiap prioritas punya minimal 3 evidence angka',
+            '- bahasa Indonesia profesional, ringkas',
+            '',
+            'Input management rows: '.json_encode($payload['rows'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input outlier rows: '.json_encode($payload['outlier_rows'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input loan summary: '.json_encode($payload['loan_summary'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input bottleneck by status: '.json_encode($payload['bottleneck_by_status'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input waiting summary: '.json_encode($payload['waiting_summary'] ?? [], JSON_UNESCAPED_UNICODE),
+            'Input waiting transitions: '.json_encode($payload['waiting_transitions'] ?? [], JSON_UNESCAPED_UNICODE),
+            '',
+            'API context: ',
+            $catalogContext,
+        ]);
+
+        $raw = $this->runAiByProvider(
+            provider: $provider,
+            prompt: $prompt,
+            systemPrompt: 'Anda analis eksekutif LOS. Jawaban wajib ringkas, spesifik, dan terukur.',
+            model: $provider === 'gemini'
+                ? config('services.gemini_ai.playbook_model')
+                : config('services.cloudflare_ai.playbook_model'),
+            maxTokens: 680,
+            temperature: 0.2,
+            useDecisionToken: true
+        );
+
+        $parsed = $this->parseExecutivePlaybookJson($raw);
+        $normalized = $this->normalizeExecutivePlaybook($parsed, $statusProfiles, (array) ($payload['loan_summary'] ?? []));
+
+        return [
+            'provider' => $provider,
+            'playbook_mode' => 'executive',
+            'result' => $normalized,
+            'raw' => $raw,
+        ];
+    }
+
+    private function parseStrictPlaybookJson(string $text): array
+    {
+        $candidate = $this->extractOuterJsonObject($text);
+        if ($candidate === null) {
+            return [];
+        }
+
+        $decoded = $this->decodeJsonLoose($candidate);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function parseExecutivePlaybookJson(string $text): array
+    {
+        $candidate = $this->extractOuterJsonObject($text);
+        if ($candidate === null) {
+            return [];
+        }
+
+        $decoded = $this->decodeJsonLoose($candidate);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function extractOuterJsonObject(string $text): ?string
+    {
+        $start = strpos($text, '{');
+        $end = strrpos($text, '}');
+        if ($start === false || $end === false || $end <= $start) {
+            return null;
+        }
+
+        return substr($text, $start, $end - $start + 1);
+    }
+
+    private function normalizeStrictPlaybook(array $decoded, array $statusProfiles, array $loanSummary): array
+    {
+        $fallback = $this->fallbackStrictPlaybook($statusProfiles, $loanSummary);
+
+        $summaryIn = is_array($decoded['summary'] ?? null) ? $decoded['summary'] : [];
+        $summary = [
+            'overall_condition' => trim((string) ($summaryIn['overall_condition'] ?? $fallback['summary']['overall_condition'])),
+            'top_risk' => trim((string) ($summaryIn['top_risk'] ?? $fallback['summary']['top_risk'])),
+            'momentum_mom' => trim((string) ($summaryIn['momentum_mom'] ?? $fallback['summary']['momentum_mom'])),
+            'data_freshness' => trim((string) ($summaryIn['data_freshness'] ?? $fallback['summary']['data_freshness'])),
+        ];
+
+        $playbookIn = is_array($decoded['playbook'] ?? null) ? $decoded['playbook'] : [];
+        $playbook = [];
+        foreach ($playbookIn as $idx => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $playbook[] = [
+                'rank' => $idx + 1,
+                'focus_area' => trim((string) ($row['focus_area'] ?? '')),
+                'priority' => $this->normalizePriority((string) ($row['priority'] ?? 'Medium')),
+                'evidence' => $this->normalizeEvidence($row['evidence'] ?? []),
+                'root_cause' => trim((string) ($row['root_cause'] ?? '')),
+                'action_30d' => trim((string) ($row['action_30d'] ?? '')),
+                'action_90d' => trim((string) ($row['action_90d'] ?? '')),
+                'target_sla_tat' => trim((string) ($row['target_sla_tat'] ?? '')),
+                'expected_impact' => trim((string) ($row['expected_impact'] ?? '')),
+                'owner' => trim((string) ($row['owner'] ?? 'Process Owner')),
+                'risk_if_no_action' => trim((string) ($row['risk_if_no_action'] ?? '')),
+            ];
+        }
+
+        if (count($playbook) < 5) {
+            $playbook = array_slice(array_merge($playbook, $fallback['playbook']), 0, 5);
+        } else {
+            $playbook = array_slice($playbook, 0, 5);
+        }
+        foreach ($playbook as $i => $x) {
+            $playbook[$i]['rank'] = $i + 1;
+            if (count($playbook[$i]['evidence']) < 3) {
+                $playbook[$i]['evidence'] = $fallback['playbook'][$i]['evidence'] ?? $playbook[$i]['evidence'];
+            }
+        }
+
+        $watchIn = is_array($decoded['watchlist'] ?? null) ? $decoded['watchlist'] : [];
+        $watchlist = [];
+        foreach ($watchIn as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $watchlist[] = [
+                'item' => trim((string) ($row['item'] ?? '')),
+                'reason' => trim((string) ($row['reason'] ?? '')),
+                'trigger_threshold' => trim((string) ($row['trigger_threshold'] ?? '')),
+            ];
+        }
+        if (count($watchlist) < 3) {
+            $watchlist = array_slice(array_merge($watchlist, $fallback['watchlist']), 0, 3);
+        } else {
+            $watchlist = array_slice($watchlist, 0, 3);
+        }
+
+        return [
+            'summary' => $summary,
+            'playbook' => $playbook,
+            'watchlist' => $watchlist,
+        ];
+    }
+
+    private function normalizeExecutivePlaybook(array $decoded, array $statusProfiles, array $loanSummary): array
+    {
+        $fallback = $this->fallbackExecutivePlaybook($statusProfiles, $loanSummary);
+
+        $headlineIn = is_array($decoded['headline'] ?? null) ? $decoded['headline'] : [];
+        $headline = [
+            'condition' => trim((string) ($headlineIn['condition'] ?? $fallback['headline']['condition'])),
+            'key_message' => trim((string) ($headlineIn['key_message'] ?? $fallback['headline']['key_message'])),
+        ];
+
+        $topIn = is_array($decoded['top_priorities'] ?? null) ? $decoded['top_priorities'] : [];
+        $topPriorities = [];
+        foreach ($topIn as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $topPriorities[] = [
+                'title' => trim((string) ($row['title'] ?? '')),
+                'why_now' => trim((string) ($row['why_now'] ?? '')),
+                'evidence_numbers' => $this->normalizeEvidence($row['evidence_numbers'] ?? []),
+                'action_now_30d' => trim((string) ($row['action_now_30d'] ?? '')),
+                'stabilization_90d' => trim((string) ($row['stabilization_90d'] ?? '')),
+                'target' => trim((string) ($row['target'] ?? '')),
+                'business_impact' => trim((string) ($row['business_impact'] ?? '')),
+            ];
+        }
+
+        if (count($topPriorities) < 3) {
+            $topPriorities = array_slice(array_merge($topPriorities, $fallback['top_priorities']), 0, 3);
+        } else {
+            $topPriorities = array_slice($topPriorities, 0, 3);
+        }
+        foreach ($topPriorities as $i => $x) {
+            if (count($topPriorities[$i]['evidence_numbers']) < 3) {
+                $topPriorities[$i]['evidence_numbers'] = $fallback['top_priorities'][$i]['evidence_numbers'] ?? $topPriorities[$i]['evidence_numbers'];
+            }
+        }
+
+        $watchIn = $decoded['management_watchouts'] ?? [];
+        $watchouts = is_array($watchIn)
+            ? array_values(array_filter(array_map(fn ($x) => trim((string) $x), $watchIn), fn ($x) => $x !== ''))
+            : [];
+        if (count($watchouts) < 3) {
+            $watchouts = array_slice(array_merge($watchouts, $fallback['management_watchouts']), 0, 3);
+        } else {
+            $watchouts = array_slice($watchouts, 0, 3);
+        }
+
+        $dataNote = trim((string) ($decoded['data_note'] ?? $fallback['data_note']));
+
+        return [
+            'headline' => $headline,
+            'top_priorities' => $topPriorities,
+            'management_watchouts' => $watchouts,
+            'data_note' => $dataNote,
+        ];
+    }
+
+    private function fallbackStrictPlaybook(array $statusProfiles, array $loanSummary): array
+    {
+        $totalApps = (int) ($loanSummary['total_applications'] ?? 0);
+        $avgTat = round((float) ($loanSummary['average_tat'] ?? 0), 1);
+        $outliers = (int) ($loanSummary['total_outliers'] ?? 0);
+
+        $playbook = [];
+        foreach (array_values($statusProfiles) as $i => $row) {
+            if ($i >= 5) {
+                break;
+            }
+            $status = (string) ($row['status'] ?? 'Status');
+            $impact = round((float) ($row['impact_pct'] ?? 0), 1);
+            $step = round((float) ($row['avg_step'] ?? 0), 2);
+            $tat = round((float) ($row['avg_tat_days'] ?? 0), 1);
+            $playbook[] = [
+                'rank' => $i + 1,
+                'focus_area' => $status,
+                'priority' => $this->normalizePriority((string) ($row['priority'] ?? 'High')),
+                'evidence' => [
+                    "Impact {$impact}%",
+                    "Avg TAT {$tat} hari",
+                    "Avg Step {$step}x",
+                ],
+                'root_cause' => "Durasi tinggi pada {$status} dipicu kombinasi TAT dan loop proses.",
+                'action_30d' => "Kurangi rework {$status} dengan SLA checkpoint mingguan.",
+                'action_90d' => "Standarisasi SOP dan kontrol eskalasi {$status}.",
+                'target_sla_tat' => 'SLA breach turun 8% dalam 2 bulan',
+                'expected_impact' => "TAT status {$status} turun 10-15%.",
+                'owner' => 'Process Owner',
+                'risk_if_no_action' => "Backlog {$status} naik dan SLA breach memburuk.",
+            ];
+        }
+        while (count($playbook) < 5) {
+            $idx = count($playbook) + 1;
+            $playbook[] = [
+                'rank' => $idx,
+                'focus_area' => "Priority Area {$idx}",
+                'priority' => 'Medium',
+                'evidence' => ['DATA TIDAK CUKUP', 'DATA TIDAK CUKUP', 'DATA TIDAK CUKUP'],
+                'root_cause' => 'DATA TIDAK CUKUP',
+                'action_30d' => 'Validasi data operasional mingguan.',
+                'action_90d' => 'Perbaiki pipeline data dan tata kelola proses.',
+                'target_sla_tat' => 'Tetapkan baseline baru dalam 30 hari',
+                'expected_impact' => 'Stabilitas performa meningkat.',
+                'owner' => 'Process Owner',
+                'risk_if_no_action' => 'Keputusan tidak presisi karena data minim.',
+            ];
+        }
+
+        return [
+            'summary' => [
+                'overall_condition' => "Total App {$totalApps}, Avg TAT {$avgTat} hari, Outlier {$outliers}.",
+                'top_risk' => 'Status prioritas berimpact tinggi dan berpotensi meningkatkan SLA breach.',
+                'momentum_mom' => 'Perlu verifikasi trend MoM dari data bulanan.',
+                'data_freshness' => 'Gunakan batch datamart terbaru sebelum eksekusi aksi.',
+            ],
+            'playbook' => $playbook,
+            'watchlist' => [
+                ['item' => 'SLA Breach', 'reason' => 'Risiko keterlambatan meningkat', 'trigger_threshold' => 'Breach > 15%'],
+                ['item' => 'Loop Frequency', 'reason' => 'Rework memperpanjang TAT', 'trigger_threshold' => 'Avg Step > 1.4x'],
+                ['item' => 'Outlier Growth', 'reason' => 'Ekstrem case membebani SLA', 'trigger_threshold' => 'Outlier naik > 10% MoM'],
+            ],
+        ];
+    }
+
+    private function fallbackExecutivePlaybook(array $statusProfiles, array $loanSummary): array
+    {
+        $strict = $this->fallbackStrictPlaybook($statusProfiles, $loanSummary);
+        $top = array_slice($strict['playbook'], 0, 3);
+
+        return [
+            'headline' => [
+                'condition' => 'Kuning: bottleneck status masih menekan SLA/TAT.',
+                'key_message' => 'Fokus 30 hari pada status berimpact tertinggi untuk menurunkan breach.',
+            ],
+            'top_priorities' => array_map(function ($x) {
+                return [
+                    'title' => 'Percepat '.$x['focus_area'],
+                    'why_now' => $x['root_cause'],
+                    'evidence_numbers' => $x['evidence'],
+                    'action_now_30d' => $x['action_30d'],
+                    'stabilization_90d' => $x['action_90d'],
+                    'target' => $x['target_sla_tat'],
+                    'business_impact' => $x['expected_impact'],
+                ];
+            }, $top),
+            'management_watchouts' => [
+                'Pantau status dengan impact tinggi dan loop > 1.4x.',
+                'Waspadai kenaikan outlier yang mendorong SLA breach.',
+                'Pastikan refresh datamart sebelum evaluasi mingguan.',
+            ],
+            'data_note' => 'Output disusun dari data datamart terbaru yang tersedia.',
+        ];
+    }
+
+    private function normalizePriority(string $priority): string
+    {
+        $p = strtolower(trim($priority));
+        if ($p === 'high') return 'High';
+        if ($p === 'low') return 'Low';
+        return 'Medium';
+    }
+
+    private function normalizeEvidence($evidence): array
+    {
+        $rows = is_array($evidence)
+            ? $evidence
+            : (is_string($evidence) ? [$evidence] : []);
+
+        $rows = array_values(array_filter(array_map(
+            fn ($x) => trim((string) $x),
+            $rows
+        ), fn ($x) => $x !== ''));
+
+        return array_slice($rows, 0, 6);
     }
 
     private function resolveProvider(?string $provider): string
@@ -523,7 +959,15 @@ class AiProxyController extends Controller
         }
 
         $data = $response->json();
-        $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        $parts = $data['candidates'][0]['content']['parts'] ?? [];
+        $text = collect(is_array($parts) ? $parts : [])
+            ->map(fn ($p) => is_array($p) ? (string) ($p['text'] ?? '') : '')
+            ->filter(fn ($x) => trim($x) !== '')
+            ->implode("\n");
+
+        if (trim($text) === '') {
+            $text = (string) ($data['candidates'][0]['content']['parts'][0]['text'] ?? '');
+        }
         if (! is_string($text) || trim($text) === '') {
             throw new HttpResponseException(response()->json([
                 'message' => 'Gemini AI returned empty response.',
@@ -579,6 +1023,7 @@ class AiProxyController extends Controller
     private function enrichMissingActionsPerStatus(array $actions, array $statusProfiles, array $loanSummary, array $bottleneckByStatus, string $provider): array
     {
         $normalize = fn (string $s) => preg_replace('/[^a-z0-9]/', '', strtolower($s));
+        $isGemini = strtolower(trim($provider)) === 'gemini';
         $seedByKey = [];
         foreach ($actions as $a) {
             $k = $normalize((string) ($a['status'] ?? ''));
@@ -606,6 +1051,20 @@ class AiProxyController extends Controller
 
             $seed = $seedByKey[$k] ?? null;
             $single = null;
+
+            // Gemini free-tier often hits RPM quickly; prefer primary parsed actions first.
+            if ($isGemini && $seed && !empty($seed['action'])) {
+                $built[] = [
+                    'status' => $status,
+                    'action' => trim((string) ($seed['action'] ?? '')),
+                    'summary' => trim((string) ($seed['summary'] ?? '')),
+                    'sla_target_impact' => trim((string) ($seed['sla_target_impact'] ?? '')),
+                    'reason' => trim((string) ($seed['reason'] ?? '')),
+                    'source' => 'ai',
+                ];
+                continue;
+            }
+
             $singlePrompt = implode("\n", [
                 'Analisis 1 status prioritas untuk menurunkan SLA breach/TAT.',
                 'Balas HANYA JSON object valid (tanpa markdown).',
@@ -623,7 +1082,8 @@ class AiProxyController extends Controller
                 'Bottleneck status detail: '.json_encode($bottleneckMap[$k] ?? [], JSON_UNESCAPED_UNICODE),
             ]);
 
-            for ($attempt = 0; $attempt < 2; $attempt++) {
+            $maxAttempts = $isGemini ? 1 : 2;
+            for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
                 try {
                     $singleText = $this->runAiByProvider(
                         provider: $provider,
@@ -642,7 +1102,9 @@ class AiProxyController extends Controller
                         break;
                     }
                 } catch (\Throwable $e) {
-                    // Retry next attempt
+                    if ($isGemini) {
+                        break;
+                    }
                 }
             }
 
@@ -872,7 +1334,8 @@ class AiProxyController extends Controller
             return false;
         }
 
-        return preg_match('/\\b(dengan|dan|atau|yang|untuk|karena|sehingga|maka|adalah|yaitu|bahwa|seperti)\\s*$/iu', $t) === 1
-            || mb_strlen($t) > 240;
+        // If response has no terminal punctuation, treat it as likely incomplete
+        // and request a short continuation.
+        return true;
     }
 }

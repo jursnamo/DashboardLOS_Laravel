@@ -156,14 +156,15 @@ class DatamartBuilder
                 app_id,
                 status_flow,
                 DATE(complete_date) as complete_key,
-                MIN(UNIX_TIMESTAMP(start_date) * 1000) as start_ms,
-                MAX(UNIX_TIMESTAMP(end_date) * 1000) as end_ms,
-                MIN(UNIX_TIMESTAMP(complete_date) * 1000) as complete_ms,
-                SUM({$durationExpr}) as duration_sum,
-                MIN(row_order) as seq
+                UNIX_TIMESTAMP(start_date) * 1000 as start_ms,
+                UNIX_TIMESTAMP(end_date) * 1000 as end_ms,
+                UNIX_TIMESTAMP(complete_date) * 1000 as complete_ms,
+                {$durationExpr} as duration_sum,
+                row_order as seq
             ")
-            ->groupBy('app_id', 'status_flow', DB::raw('DATE(complete_date)'))
-            ->orderBy('seq')
+            ->orderBy('app_id')
+            ->orderByRaw('COALESCE(complete_date, start_date, end_date)')
+            ->orderBy('row_order')
             ->get();
 
         $appFlowEvents = [];

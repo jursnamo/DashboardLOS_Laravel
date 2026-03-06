@@ -58,7 +58,7 @@
                     </div>
                     
                     <div id="pan-date" class="inp-p show">
-                        <label class="small text-muted">Start Date</label>
+                        <label class="small text-muted">Start Date <span class="text-danger">*</span></label>
                         <select id="mStart" class="form-control col-sel form-control-sm mb-2"></select>
                         <label class="small text-muted">Completed Date</label>
                         <select id="mEnd" class="form-control col-sel form-control-sm"></select>
@@ -66,14 +66,17 @@
 
                     <div id="pan-tat" class="inp-p">
                         <label class="small text-muted fw-bold text-primary">Select TAT/SLA Column</label>
-                        <select id="mTat" class="form-control col-sel form-control-sm"></select>
+                        <select id="mTat" class="form-control col-sel form-control-sm mb-2"></select>
+                        <label class="small text-muted fw-bold">Start Date <span class="text-danger">*</span> (for Waiting Time)</label>
+                        <select id="mStartTat" class="form-control col-sel form-control-sm"></select>
                     </div>
 
                     <hr class="my-2">
                     <label class="small text-muted fw-bold">Booking Month (for Trend Chart)</label>
                     <select id="mMonth" class="form-control col-sel form-control-sm"></select>
-                    <label class="small text-muted fw-bold mt-2">Complete Date (for Outlier Detail Timeline)</label>
+                    <label class="small text-muted fw-bold mt-2">Complete Date <span class="text-danger">*</span> (for Outlier Detail Timeline & Waiting Time)</label>
                     <select id="mComplete" class="form-control col-sel form-control-sm"></select>
+                    <div class="small text-danger mt-1">Start Date dan Complete Date wajib untuk hitung waiting time status A -> B.</div>
                 </div>
             </div>
 
@@ -204,6 +207,31 @@
                     </div>
                     <div style="height: 280px;"><canvas id="cAvgStepStatus"></canvas></div>
                     <div class="small text-muted mt-2" id="avgStepStatusInfo"></div>
+                </div>
+            </div>
+            <div class="col-md-12">
+                <div class="chart-card border-warning">
+                    <div class="chart-head text-warning d-flex justify-content-between">
+                        <span><i class="fal fa-hourglass-half me-2"></i>Top 10 Waiting Bottleneck (Status A → B)</span>
+                        <span class="small text-muted" id="waitingBottleneckSummary">Menunggu data...</span>
+                    </div>
+                    <div class="table-responsive" style="max-height: 260px;">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>#</th>
+                                    <th>Transition</th>
+                                    <th class="text-end">Avg Wait (Days)</th>
+                                    <th class="text-end">Total Wait (Days)</th>
+                                    <th class="text-end">Cases</th>
+                                    <th class="text-end">Max Wait (Days)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="waitingBottleneckTable">
+                                <tr><td colspan="6" class="text-center text-muted">No data yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
             <div class="col-md-12">
@@ -716,9 +744,6 @@
         </div>
     </div>
 </div>
-
-
-
 
 
 
