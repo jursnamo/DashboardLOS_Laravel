@@ -8,10 +8,12 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/dashboard/content', [DashboardApiController::class, 'content'])->name('api.dashboard.content');
 Route::get('/dashboard', [DashboardApiController::class, 'content'])->name('api.dashboard.index');
-Route::post('/dashboard/import', [DashboardApiController::class, 'import'])->name('api.dashboard.import');
-Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class, 'importChunk'])->name('api.dashboard.import.chunk');
-Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
-Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
+Route::withoutMiddleware('throttle:api')->group(function () {
+    Route::post('/dashboard/import', [DashboardApiController::class, 'import'])->name('api.dashboard.import');
+    Route::post('/dashboard/import/{batchId}/chunk', [DashboardApiController::class, 'importChunk'])->name('api.dashboard.import.chunk');
+    Route::post('/dashboard/import/{batchId}/finalize', [DashboardApiController::class, 'importFinalize'])->name('api.dashboard.import.finalize');
+    Route::get('/dashboard/import/{batchId}/status', [DashboardApiController::class, 'importStatus'])->name('api.dashboard.import.status');
+});
 Route::post('/dashboard/datamart/execute', [DashboardApiController::class, 'executeDatamart'])->name('api.dashboard.datamart.execute');
 Route::get('/dashboard/datamart/status/{batchId?}', [DashboardApiController::class, 'datamartStatus'])->name('api.dashboard.datamart.status');
 Route::post('/ai/chat', [AiProxyController::class, 'chat'])->name('api.ai.chat');

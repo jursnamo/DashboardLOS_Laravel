@@ -28,7 +28,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
     const DASHBOARD_CONTENT_API = '/api/dashboard/content';
     const DASHBOARD_IMPORT_STATUS_API = '/api/dashboard/import';
     const DASHBOARD_DATAMART_EXECUTE_API = '/api/dashboard/datamart/execute';
-    const DASHBOARD_IMPORT_CHUNK_SIZE = 1200;
+    const DASHBOARD_IMPORT_CHUNK_SIZE = 400;
     let uploadedFileName = '';
     let isImportingToDb = false;
     let isDashboardLoading = false;
@@ -1364,6 +1364,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             if (hint) {
                 hint.textContent = `Chunk ${Math.floor(i / DASHBOARD_IMPORT_CHUNK_SIZE) + 1} berhasil dikirim.`;
             }
+            // Small delay to avoid connection reset on weaker machines / servers
+            await new Promise(resolve => setTimeout(resolve, 80));
         }
 
         // 3) Finalize
@@ -4771,7 +4773,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
 
 
 
