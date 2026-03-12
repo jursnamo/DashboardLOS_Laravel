@@ -62,6 +62,9 @@ class DashboardApiController extends Controller
         $durationExpr = $mode === 'tat'
             ? 'COALESCE(tat_days, 0)'
             : 'CASE WHEN start_date IS NOT NULL AND end_date IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(SECOND, start_date, end_date), 0) / 86400 ELSE 0 END';
+        $statusDurationExpr = $mode === 'tat'
+            ? 'SUM(COALESCE(tat_days, 0))'
+            : 'CASE WHEN MIN(start_date) IS NOT NULL AND MAX(COALESCE(complete_date, end_date)) IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(SECOND, MIN(start_date), MAX(COALESCE(complete_date, end_date))), 0) / 86400 ELSE 0 END';
 
         $perAppRows = DB::table('dashboard_records')
             ->where('batch_id', $latestBatch->id)
@@ -97,7 +100,7 @@ class DashboardApiController extends Controller
 
         $statusAggRows = DB::table('dashboard_records')
             ->where('batch_id', $latestBatch->id)
-            ->selectRaw("app_id, status_flow, SUM({$durationExpr}) as total_duration")
+            ->selectRaw("app_id, status_flow, {$statusDurationExpr} as total_duration")
             ->groupBy('app_id', 'status_flow')
             ->orderBy('app_id')
             ->orderBy('status_flow')
@@ -117,10 +120,11 @@ class DashboardApiController extends Controller
 
         $flowEventRows = DB::table('dashboard_records')
             ->where('batch_id', $latestBatch->id)
-            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(complete_date) as complete_key,\n                UNIX_TIMESTAMP(start_date) * 1000 as start_ms,\n                UNIX_TIMESTAMP(end_date) * 1000 as end_ms,\n                UNIX_TIMESTAMP(complete_date) * 1000 as complete_ms,\n                {$durationExpr} as duration_sum,\n                row_order as seq\n            ")
+            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(MAX(complete_date)) as complete_key,\n                UNIX_TIMESTAMP(MIN(start_date)) * 1000 as start_ms,\n                UNIX_TIMESTAMP(MAX(end_date)) * 1000 as end_ms,\n                UNIX_TIMESTAMP(MAX(complete_date)) * 1000 as complete_ms,\n                {$statusDurationExpr} as duration_sum,\n                MIN(row_order) as seq,\n                COALESCE(MAX(complete_date), MIN(start_date), MAX(end_date)) as sort_key\n            ")
+            ->groupBy('app_id', 'status_flow')
             ->orderBy('app_id')
-            ->orderByRaw('COALESCE(complete_date, start_date, end_date)')
-            ->orderBy('row_order')
+            ->orderBy('sort_key')
+            ->orderBy('seq')
             ->get();
 
         $appFlowEvents = [];

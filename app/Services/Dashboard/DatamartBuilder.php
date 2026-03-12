@@ -88,6 +88,9 @@ class DatamartBuilder
         $durationExpr = $mode === 'tat'
             ? 'COALESCE(tat_days, 0)'
             : 'CASE WHEN start_date IS NOT NULL AND end_date IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(SECOND, start_date, end_date), 0) / 86400 ELSE 0 END';
+        $statusDurationExpr = $mode === 'tat'
+            ? 'SUM(COALESCE(tat_days, 0))'
+            : 'CASE WHEN MIN(start_date) IS NOT NULL AND MAX(COALESCE(complete_date, end_date)) IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(SECOND, MIN(start_date), MAX(COALESCE(complete_date, end_date))), 0) / 86400 ELSE 0 END';
 
         $perAppRows = DB::table('dashboard_records')
             ->where('batch_id', $sourceBatch->id)
@@ -134,7 +137,7 @@ class DatamartBuilder
 
         $statusAggRows = DB::table('dashboard_records')
             ->where('batch_id', $sourceBatch->id)
-            ->selectRaw("app_id, status_flow, SUM({$durationExpr}) as total_duration")
+            ->selectRaw("app_id, status_flow, {$statusDurationExpr} as total_duration")
             ->groupBy('app_id', 'status_flow')
             ->orderBy('app_id')
             ->orderBy('status_flow')
@@ -155,16 +158,18 @@ class DatamartBuilder
             ->selectRaw("
                 app_id,
                 status_flow,
-                DATE(complete_date) as complete_key,
-                UNIX_TIMESTAMP(start_date) * 1000 as start_ms,
-                UNIX_TIMESTAMP(end_date) * 1000 as end_ms,
-                UNIX_TIMESTAMP(complete_date) * 1000 as complete_ms,
-                {$durationExpr} as duration_sum,
-                row_order as seq
+                DATE(MAX(complete_date)) as complete_key,
+                UNIX_TIMESTAMP(MIN(start_date)) * 1000 as start_ms,
+                UNIX_TIMESTAMP(MAX(end_date)) * 1000 as end_ms,
+                UNIX_TIMESTAMP(MAX(complete_date)) * 1000 as complete_ms,
+                {$statusDurationExpr} as duration_sum,
+                MIN(row_order) as seq,
+                COALESCE(MAX(complete_date), MIN(start_date), MAX(end_date)) as sort_key
             ")
+            ->groupBy('app_id', 'status_flow')
             ->orderBy('app_id')
-            ->orderByRaw('COALESCE(complete_date, start_date, end_date)')
-            ->orderBy('row_order')
+            ->orderBy('sort_key')
+            ->orderBy('seq')
             ->get();
 
         $appFlowEvents = [];
