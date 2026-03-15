@@ -1287,6 +1287,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
                     endMs: Number.isFinite(Number(ev.endMs)) ? Number(ev.endMs) : null,
                     completeMs: Number.isFinite(Number(ev.completeMs)) ? Number(ev.completeMs) : null,
                     completeKey: ev.completeKey || null,
+                    count: Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1,
                     seq: Number.isFinite(Number(ev.seq)) ? Number(ev.seq) : 0
                 })) : []
             };
@@ -3084,7 +3085,7 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             startMs: Number.isFinite(Number(ev.startMs)) ? Number(ev.startMs) : null,
             completeMs: Number.isFinite(Number(ev.completeMs)) ? Number(ev.completeMs) : null,
             duration: safeNum(ev.duration, 0),
-            count: 1,
+            count: Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1,
             seq: Number.isFinite(Number(ev.seq)) ? Number(ev.seq) : 0
         }));
     }
@@ -3131,7 +3132,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             const cntByStatus = {};
             (flow.events || []).forEach(ev => {
                 const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-                cntByStatus[st] = (cntByStatus[st] || 0) + 1;
+                const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+                cntByStatus[st] = (cntByStatus[st] || 0) + stepCount;
             });
             Object.keys(cntByStatus).forEach(st => {
                 if (!statAgg[st]) statAgg[st] = { totalStep: 0, appCount: 0 };
@@ -3244,7 +3246,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
         const tatTotals = {};
         flow.events.forEach(ev => {
             const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-            counts[st] = (counts[st] || 0) + 1;
+            const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+            counts[st] = (counts[st] || 0) + stepCount;
             tatTotals[st] = (tatTotals[st] || 0) + safeNum(ev.duration, 0);
         });
         return Object.entries(counts)
@@ -3320,7 +3323,8 @@ let raw = [], mode = 'date', charts = {}, globalOutliers = [], statusOutliers = 
             const perStatus = {};
             (flow.events || []).forEach(ev => {
                 const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-                perStatus[st] = (perStatus[st] || 0) + 1;
+                const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+                perStatus[st] = (perStatus[st] || 0) + stepCount;
             });
             Object.entries(perStatus).forEach(([st, cnt]) => {
                 if (!stepAgg[st]) stepAgg[st] = { totalStep: 0, appCount: 0 };
@@ -4773,8 +4777,5 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
-
 
 

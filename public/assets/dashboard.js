@@ -1969,12 +1969,13 @@ ${userText}`
         events.forEach(ev => {
             const status = String(ev.status || 'Unknown').trim() || 'Unknown';
             const dateKey = (ev.completeKey && String(ev.completeKey).trim()) || null;
+            const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
             if (!dateKey) {
                 order.push({
                     status,
                     completeMs: null,
                     duration: safeNum(ev.duration, 0),
-                    count: 1,
+                    count: stepCount,
                     seq: ev.seq
                 });
                 return;
@@ -1992,7 +1993,7 @@ ${userText}`
                 order.push(grouped[key]);
             }
             grouped[key].duration += safeNum(ev.duration, 0);
-            grouped[key].count += 1;
+            grouped[key].count += stepCount;
             if (ev.seq < grouped[key].seq) grouped[key].seq = ev.seq;
             if (Number.isFinite(ev.completeMs) && (!Number.isFinite(grouped[key].completeMs) || ev.completeMs < grouped[key].completeMs)) {
                 grouped[key].completeMs = ev.completeMs;
@@ -2080,7 +2081,8 @@ ${userText}`
             const cntByStatus = {};
             (flow.events || []).forEach(ev => {
                 const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-                cntByStatus[st] = (cntByStatus[st] || 0) + 1;
+                const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+                cntByStatus[st] = (cntByStatus[st] || 0) + stepCount;
             });
             Object.keys(cntByStatus).forEach(st => {
                 if (!statAgg[st]) statAgg[st] = { totalStep: 0, appCount: 0 };
@@ -2193,7 +2195,8 @@ ${userText}`
         const tatTotals = {};
         flow.events.forEach(ev => {
             const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-            counts[st] = (counts[st] || 0) + 1;
+            const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+            counts[st] = (counts[st] || 0) + stepCount;
             tatTotals[st] = (tatTotals[st] || 0) + safeNum(ev.duration, 0);
         });
         return Object.entries(counts)
@@ -2259,7 +2262,8 @@ ${userText}`
             const perStatus = {};
             (flow.events || []).forEach(ev => {
                 const st = String(ev.status || 'Unknown').trim() || 'Unknown';
-                perStatus[st] = (perStatus[st] || 0) + 1;
+                const stepCount = Number.isFinite(Number(ev.count)) ? Number(ev.count) : 1;
+                perStatus[st] = (perStatus[st] || 0) + stepCount;
             });
             Object.entries(perStatus).forEach(([st, cnt]) => {
                 if (!stepAgg[st]) stepAgg[st] = { totalStep: 0, appCount: 0 };
@@ -3722,8 +3726,6 @@ ${rows ? `<ul>${rows}</ul>` : '<div>No reduction applied.</div>'}
         link.click();
         document.body.removeChild(link);
     }
-
-
 
 
 

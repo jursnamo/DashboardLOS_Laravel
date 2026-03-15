@@ -163,6 +163,7 @@ class DatamartBuilder
                 UNIX_TIMESTAMP(MAX(end_date)) * 1000 as end_ms,
                 UNIX_TIMESTAMP(MAX(complete_date)) * 1000 as complete_ms,
                 {$statusDurationExpr} as duration_sum,
+                COUNT(*) as step_count,
                 MIN(row_order) as seq,
                 COALESCE(MAX(complete_date), MIN(start_date), MAX(end_date)) as sort_key
             ")
@@ -198,6 +199,7 @@ class DatamartBuilder
                 'endMs' => $row->end_ms !== null ? (int) $row->end_ms : null,
                 'completeMs' => $row->complete_ms !== null ? (int) $row->complete_ms : null,
                 'completeKey' => $row->complete_key,
+                'count' => (int) ($row->step_count ?? 1),
                 'seq' => (int) $row->seq,
             ];
         }

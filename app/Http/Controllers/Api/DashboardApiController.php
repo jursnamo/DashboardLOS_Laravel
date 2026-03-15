@@ -120,7 +120,7 @@ class DashboardApiController extends Controller
 
         $flowEventRows = DB::table('dashboard_records')
             ->where('batch_id', $latestBatch->id)
-            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(MAX(complete_date)) as complete_key,\n                UNIX_TIMESTAMP(MIN(start_date)) * 1000 as start_ms,\n                UNIX_TIMESTAMP(MAX(end_date)) * 1000 as end_ms,\n                UNIX_TIMESTAMP(MAX(complete_date)) * 1000 as complete_ms,\n                {$statusDurationExpr} as duration_sum,\n                MIN(row_order) as seq,\n                COALESCE(MAX(complete_date), MIN(start_date), MAX(end_date)) as sort_key\n            ")
+            ->selectRaw("\n                app_id,\n                status_flow,\n                DATE(MAX(complete_date)) as complete_key,\n                UNIX_TIMESTAMP(MIN(start_date)) * 1000 as start_ms,\n                UNIX_TIMESTAMP(MAX(end_date)) * 1000 as end_ms,\n                UNIX_TIMESTAMP(MAX(complete_date)) * 1000 as complete_ms,\n                {$statusDurationExpr} as duration_sum,\n                COUNT(*) as step_count,\n                MIN(row_order) as seq,\n                COALESCE(MAX(complete_date), MIN(start_date), MAX(end_date)) as sort_key\n            ")
             ->groupBy('app_id', 'status_flow')
             ->orderBy('app_id')
             ->orderBy('sort_key')
@@ -154,6 +154,7 @@ class DashboardApiController extends Controller
                 'endMs' => $row->end_ms !== null ? (int) $row->end_ms : null,
                 'completeMs' => $row->complete_ms !== null ? (int) $row->complete_ms : null,
                 'completeKey' => $row->complete_key,
+                'count' => (int) ($row->step_count ?? 1),
                 'seq' => (int) $row->seq,
             ];
         }
